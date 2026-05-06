@@ -14,7 +14,11 @@ import httpx
 
 from ...config import get_uploads_dir
 from ...core.tools.adapters.vibe.config import BaseToolConfig
-from ..services.tool_credentials import get_sql_connection_map, resolve_tool_credential
+from ..services.tool_credentials import (
+    get_sql_connection_map,
+    get_user_tool_overrides,
+    resolve_tool_credential,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -121,6 +125,7 @@ class WebToolConfig(BaseToolConfig):
         request: Any,
         user_id: Optional[int] = None,
         is_admin: bool = False,
+        user: Optional[Any] = None,
         workspace_config: Optional[Dict[str, Any]] = None,
         vision_model: Optional[Any] = None,
         llm: Optional[Any] = None,
@@ -159,6 +164,11 @@ class WebToolConfig(BaseToolConfig):
         self._allowed_skills = allowed_skills
         self._allowed_tools = allowed_tools
         self._excluded_agent_id: Optional[int] = None
+
+        # Cache user object for hook queries.
+        # Use explicit user param first; fall back to request.user.
+        self._user = user if user is not None else getattr(request, "user", None)
+        self._cached_tool_overrides: Optional[dict] = None
 
         # Sandbox instance - only store reference, lifecycle managed by upper layer
         self._sandbox: Optional[Any] = None
@@ -294,6 +304,24 @@ class WebToolConfig(BaseToolConfig):
     def get_allowed_tools(self) -> Optional[List[str]]:
         """Get allowed tool names. None means all tools are allowed."""
         return self._allowed_tools
+
+    def get_user_tool_overrides(self) -> dict:
+        """Return per-user tool overrides from the registered hook.
+
+        Both display layer and execution layer use this as the single
+        source of truth for per-user tool policies.
+        """
+        if self._cached_tool_overrides is not None:
+            return self._cached_tool_overrides
+        if self._user is None:
+            self._cached_tool_overrides = {}
+            return {}
+        try:
+            self._cached_tool_overrides = get_user_tool_overrides(self.db, self._user)
+        except Exception:
+            logger.exception("Failed to get user tool overrides")
+            self._cached_tool_overrides = {}
+        return self._cached_tool_overrides
 
     def get_excluded_agent_id(self) -> Optional[int]:
         """Get agent ID to exclude from agent tools (to prevent self-calls)."""

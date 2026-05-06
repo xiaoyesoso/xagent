@@ -3,7 +3,7 @@
 import asyncio
 import logging
 from datetime import datetime
-from typing import Any, DefaultDict, Dict, List, Optional, cast
+from typing import Any, cast
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
@@ -62,7 +62,7 @@ class CredentialFieldUpdate(BaseModel):
 
 
 class ToolCredentialUpdateRequest(BaseModel):
-    credentials: Dict[str, CredentialFieldUpdate]
+    credentials: dict[str, CredentialFieldUpdate]
 
 
 class ToolEnableUpdateRequest(BaseModel):
@@ -80,7 +80,7 @@ def _create_tool_info(
     image_models: Any = None,
     asr_models: Any = None,
     tts_models: Any = None,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Create tool information based on category instead of hardcoded names"""
     tool_name = getattr(tool, "name", tool.__class__.__name__)
 
@@ -195,7 +195,7 @@ def _create_tool_info(
 async def get_available_tools(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Get list of all available tools, including MCP tools.
 
     Tools are self-describing - each tool declares its own category via
@@ -204,15 +204,16 @@ async def get_available_tools(
 
     # Create a temporary request object (simulating WebToolConfig requirements)
     class MockRequest:
-        def __init__(self) -> None:
-            self.credentials: Optional[Any] = None
+        def __init__(self, user: User) -> None:
+            self.credentials: Any | None = None
+            self.user = user
 
     # Create WebToolConfig, now includes MCP tools
     # Note: llm=None for tool listing (display only, no execution)
     current_user_id = _require_user_id(current_user)
     tool_config = WebToolConfig(
         db=db,
-        request=MockRequest(),
+        request=MockRequest(current_user),
         user_id=current_user_id,
         is_admin=bool(current_user.is_admin),
         llm=None,  # Not needed for tool listing
@@ -258,7 +259,7 @@ async def get_available_tools(
     tts_models = tool_config.get_tts_models()
 
     # Convert tools to API format with category information
-    tools: List[Dict[str, Any]] = []
+    tools: list[dict[str, Any]] = []
     for tool in all_tools:
         category = get_tool_category(tool)
         tools.append(
@@ -275,9 +276,9 @@ async def get_available_tools(
     # Calculate tool usage count from ToolUsage table (execution stats)
     from collections import defaultdict
 
-    usage_map: DefaultDict[str, int] = defaultdict(int)
+    usage_map: defaultdict[str, int] = defaultdict(int)
     try:
-        usage_stats: List[Any] = db.query(ToolUsage).all()
+        usage_stats: list[Any] = db.query(ToolUsage).all()
         for stat in usage_stats:
             usage_map[stat.tool_name] = stat.usage_count
     except Exception as e:
@@ -314,6 +315,23 @@ async def get_available_tools(
             requires_configuration = requires_configuration_map.get("sql_query", False)
         tool_item["requires_configuration"] = requires_configuration
 
+    # Apply per-user tool overrides (e.g. per-user enable/disable).
+    # Only affects policy-based states; resource-missing states cannot be
+    # overridden to "available".
+    user_overrides = tool_config.get_user_tool_overrides()
+    for tool_item in tools:
+        tool_name = str(tool_item.get("name") or "")
+        override = user_overrides.get(tool_name)
+        if override and override.get("enabled") is not None:
+            if not override["enabled"]:
+                tool_item["enabled"] = False
+                tool_item["status"] = "disabled"
+                tool_item["status_reason"] = "Disabled by admin"
+            elif tool_item["status"] in ("disabled", "available"):
+                tool_item["enabled"] = True
+                tool_item["status"] = "available"
+                tool_item["status_reason"] = None
+
     return {
         "tools": tools,
         "count": len(tools),
@@ -324,11 +342,11 @@ async def get_available_tools(
 async def get_configurable_tools(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     if not bool(current_user.is_admin):
         raise HTTPException(status_code=403, detail="Admin privileges required")
 
-    items: List[Dict[str, Any]] = []
+    items: list[dict[str, Any]] = []
     for tool_name in list_configurable_tool_names():
         view = get_tool_credential_view(db, tool_name)
         items.append(
@@ -350,7 +368,7 @@ async def get_configurable_tools(
 async def get_sql_connections(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     items = list_sql_connections(db, _require_user_id(current_user))
     return {
         "connections": items,
@@ -364,7 +382,7 @@ async def upsert_sql_connection(
     payload: SqlConnectionUpsertRequest,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     current_user_id = _require_user_id(current_user)
     try:
         set_sql_connection(db, current_user_id, name, payload.connection_url)
@@ -381,7 +399,7 @@ async def remove_sql_connection(
     name: str,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     current_user_id = _require_user_id(current_user)
     delete_sql_connection(db, current_user_id, name)
     return {
@@ -395,7 +413,7 @@ async def update_tool_enabled(
     payload: ToolEnableUpdateRequest,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     if not bool(current_user.is_admin):
         raise HTTPException(status_code=403, detail="Admin privileges required")
 
@@ -433,7 +451,7 @@ async def get_tool_credentials(
     tool_name: str,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     if not bool(current_user.is_admin):
         raise HTTPException(status_code=403, detail="Admin privileges required")
 
@@ -451,7 +469,7 @@ async def update_tool_credentials(
     payload: ToolCredentialUpdateRequest,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     if not bool(current_user.is_admin):
         raise HTTPException(status_code=403, detail="Admin privileges required")
 
@@ -479,7 +497,7 @@ async def delete_tool_credential(
     field_name: str,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     if not bool(current_user.is_admin):
         raise HTTPException(status_code=403, detail="Admin privileges required")
 
@@ -498,11 +516,11 @@ async def delete_tool_credential(
 
 
 @tools_router.get("/usage")
-async def get_tool_usage(db: Session = Depends(get_db)) -> List[Dict[str, Any]]:
+async def get_tool_usage(db: Session = Depends(get_db)) -> list[dict[str, Any]]:
     """Get tool usage statistics"""
     try:
         # Run synchronous database queries in thread pool to avoid blocking event loop
-        def _get_tool_usage_sync() -> List[Dict[str, Any]]:
+        def _get_tool_usage_sync() -> list[dict[str, Any]]:
             usage_stats = db.query(ToolUsage).all()
 
             result = []
@@ -533,4 +551,4 @@ async def get_tool_usage(db: Session = Depends(get_db)) -> List[Dict[str, Any]]:
 
     except Exception as e:
         logger.error(f"Get tool usage failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e

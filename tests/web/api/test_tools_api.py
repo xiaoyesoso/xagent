@@ -287,6 +287,128 @@ class TestToolsAvailableAPI:
         assert categories["tool_without_metadata"] == "other"
         assert categories["tool_with_metadata"] == "basic"
 
+    def test_get_available_tools_applies_user_override(self):
+        """Test that user tool override hook filters disabled tools from /available."""
+        from xagent.web.services.tool_credentials import set_user_tool_overrides_hook
+
+        set_user_tool_overrides_hook(
+            lambda db, user: {"browser_navigate": {"enabled": False}}
+        )
+        try:
+            login_response = client.post(
+                "/api/auth/login",
+                json={"username": "admin", "password": "admin123"},
+            )
+            assert login_response.status_code == 200
+            token = login_response.json()["access_token"]
+
+            response = client.get(
+                "/api/tools/available",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            assert response.status_code == 200
+            payload = response.json()
+
+            tool_names = {item["name"] for item in payload["tools"]}
+            # browser_navigate is filtered out by the hook in both display
+            # and execution layers for consistency.
+            assert "browser_navigate" not in tool_names
+        finally:
+            set_user_tool_overrides_hook(None)
+
+    def test_get_available_tools_override_does_not_mask_missing_model(
+        self, monkeypatch
+    ):
+        """Test that enabled=True override cannot mask resource-missing states."""
+        from xagent.web.services.tool_credentials import set_user_tool_overrides_hook
+
+        class _Category:
+            value = "vision"
+
+        class _Metadata:
+            category = _Category()
+
+        class _VisionTool:
+            name = "vision_test_tool"
+            description = ""
+            metadata = _Metadata()
+
+        async def mock_create_all_tools(config):
+            return [_VisionTool()]
+
+        monkeypatch.setattr(
+            "xagent.core.tools.adapters.vibe.factory.ToolFactory.create_all_tools",
+            mock_create_all_tools,
+        )
+        monkeypatch.setattr(
+            "xagent.web.tools.config.WebToolConfig.get_vision_model",
+            lambda self: None,
+        )
+
+        set_user_tool_overrides_hook(
+            lambda db, user: {"vision_test_tool": {"enabled": True}}
+        )
+        try:
+            login_response = client.post(
+                "/api/auth/login",
+                json={"username": "admin", "password": "admin123"},
+            )
+            assert login_response.status_code == 200
+            token = login_response.json()["access_token"]
+
+            response = client.get(
+                "/api/tools/available",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            assert response.status_code == 200
+            payload = response.json()
+
+            tool_map = {item["name"]: item for item in payload["tools"]}
+            assert "vision_test_tool" in tool_map
+            assert tool_map["vision_test_tool"]["status"] == "missing_model"
+            assert tool_map["vision_test_tool"]["enabled"] is False
+        finally:
+            set_user_tool_overrides_hook(None)
+
+    def test_get_available_tools_override_enables_globally_disabled_tool(self):
+        """Test that enabled=True override can re-enable a globally disabled tool."""
+        from xagent.web.services.tool_credentials import set_user_tool_overrides_hook
+
+        # Step 1: globally disable browser_navigate via admin API
+        headers = {"Authorization": f"Bearer {self._login_admin()}"}
+        put_resp = client.put(
+            "/api/tools/browser_navigate/enabled",
+            headers=headers,
+            json={"enabled": False},
+        )
+        assert put_resp.status_code == 200
+
+        # Step 2: set hook to re-enable it
+        set_user_tool_overrides_hook(
+            lambda db, user: {"browser_navigate": {"enabled": True}}
+        )
+        try:
+            response = client.get(
+                "/api/tools/available",
+                headers=headers,
+            )
+            assert response.status_code == 200
+            payload = response.json()
+
+            tool_map = {item["name"]: item for item in payload["tools"]}
+            assert "browser_navigate" in tool_map
+            assert tool_map["browser_navigate"]["enabled"] is True
+            assert tool_map["browser_navigate"]["status"] == "available"
+        finally:
+            set_user_tool_overrides_hook(None)
+
+    def _login_admin(self) -> str:
+        login_response = client.post(
+            "/api/auth/login", json={"username": "admin", "password": "admin123"}
+        )
+        assert login_response.status_code == 200
+        return login_response.json()["access_token"]
+
 
 class TestToolsGovernanceAPI:
     @pytest.fixture(autouse=True)
@@ -493,3 +615,226 @@ class TestToolsGovernanceAPI:
 
         assert configurable_resp.status_code == 403
         assert credential_resp.status_code == 403
+
+
+def test_user_tool_overrides_hook_noop_by_default():
+    """Without a hook set, get_user_tool_overrides returns an empty dict."""
+    from xagent.web.services.tool_credentials import get_user_tool_overrides
+
+    result = get_user_tool_overrides(db=None, user=None)
+    assert result == {}
+
+
+def test_user_tool_overrides_hook_returns_injected_data():
+    """When a hook is set, it returns the hook's result."""
+    from xagent.web.services.tool_credentials import (
+        get_user_tool_overrides,
+        set_user_tool_overrides_hook,
+    )
+
+    def my_hook(db, user):
+        return {
+            "calculator": {"enabled": False},
+            "web_search": {"config": {"api_key": "x"}},
+        }
+
+    set_user_tool_overrides_hook(my_hook)
+    try:
+        result = get_user_tool_overrides(db=None, user=None)
+        assert result["calculator"]["enabled"] is False
+        assert result["web_search"]["config"] == {"api_key": "x"}
+        assert "nonexistent" not in result
+    finally:
+        set_user_tool_overrides_hook(None)
+
+
+def test_user_tool_overrides_hook_reset_to_none():
+    """Setting hook to None restores default empty behavior."""
+    from xagent.web.services.tool_credentials import (
+        get_user_tool_overrides,
+        set_user_tool_overrides_hook,
+    )
+
+    set_user_tool_overrides_hook(lambda db, user: {"test": {"enabled": True}})
+    set_user_tool_overrides_hook(None)
+    result = get_user_tool_overrides(db=None, user=None)
+    assert result == {}
+
+
+class TestWebToolConfigUserOverride:
+    """Verify WebToolConfig.get_user_tool_overrides() resolves user correctly."""
+
+    def test_explicit_user_param_takes_priority(self):
+        """When user keyword arg is passed, it is used even when request has no .user."""
+        from unittest.mock import MagicMock
+
+        from xagent.web.services.tool_credentials import set_user_tool_overrides_hook
+        from xagent.web.tools.config import WebToolConfig
+
+        def _hook(db, user):
+            return {"browser_navigate": {"enabled": False}}
+
+        set_user_tool_overrides_hook(_hook)
+        try:
+            # Simulate TaskCreateRequest: no .user attribute
+            request_without_user = MagicMock()
+            del request_without_user.user
+
+            cfg = WebToolConfig(
+                db=MagicMock(),
+                request=request_without_user,
+                user_id=42,
+                user=MagicMock(id=42),  # explicit user
+                workspace_config={"base_dir": "/tmp", "task_id": "test"},
+            )
+            assert cfg.get_user_tool_overrides() == {
+                "browser_navigate": {"enabled": False}
+            }
+        finally:
+            set_user_tool_overrides_hook(None)
+
+    def test_falls_back_to_request_user_when_explicit_not_given(self):
+        """Without explicit user, request.user is used (existing behavior)."""
+        from unittest.mock import MagicMock
+
+        from xagent.web.services.tool_credentials import set_user_tool_overrides_hook
+        from xagent.web.tools.config import WebToolConfig
+
+        def _hook(db, user):
+            return {"browser_navigate": {"enabled": False}}
+
+        set_user_tool_overrides_hook(_hook)
+        try:
+            mock_user = MagicMock(id=42)
+            request = MagicMock(user=mock_user)
+
+            cfg = WebToolConfig(
+                db=MagicMock(),
+                request=request,
+                user_id=42,
+                workspace_config={"base_dir": "/tmp", "task_id": "test"},
+            )
+            assert cfg.get_user_tool_overrides() == {
+                "browser_navigate": {"enabled": False}
+            }
+        finally:
+            set_user_tool_overrides_hook(None)
+
+    def test_returns_empty_when_no_user_at_all(self):
+        """When neither explicit user nor request.user is available, returns {}."""
+        from unittest.mock import MagicMock
+
+        from xagent.web.services.tool_credentials import set_user_tool_overrides_hook
+        from xagent.web.tools.config import WebToolConfig
+
+        def _hook(db, user):
+            return {"browser_navigate": {"enabled": False}}
+
+        set_user_tool_overrides_hook(_hook)
+        try:
+            request_without_user = MagicMock()
+            del request_without_user.user
+
+            cfg = WebToolConfig(
+                db=MagicMock(),
+                request=request_without_user,
+                user_id=42,
+                workspace_config={"base_dir": "/tmp", "task_id": "test"},
+            )
+            assert cfg.get_user_tool_overrides() == {}
+        finally:
+            set_user_tool_overrides_hook(None)
+
+    @pytest.mark.asyncio
+    async def test_create_all_tools_filters_disabled_when_user_is_explicit(self):
+        """End-to-end: ToolFactory filters tools disabled by per-user hook
+        even when request has no .user but explicit user is provided."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from xagent.core.tools.adapters.vibe.factory import ToolFactory
+        from xagent.web.services.tool_credentials import set_user_tool_overrides_hook
+        from xagent.web.tools.config import WebToolConfig
+
+        def _hook(db, user):
+            return {"browser_navigate": {"enabled": False}}
+
+        set_user_tool_overrides_hook(_hook)
+        try:
+            # Simulate TaskCreateRequest: no .user
+            request_without_user = MagicMock()
+            del request_without_user.user
+
+            cfg = WebToolConfig(
+                db=MagicMock(),
+                request=request_without_user,
+                user=MagicMock(id=42),  # explicit user
+                user_id=42,
+                workspace_config={"base_dir": "/tmp", "task_id": "test"},
+            )
+
+            # Create mock tools with string .name attributes
+            tool_browser = MagicMock()
+            tool_browser.name = "browser_navigate"
+            tool_calc = MagicMock()
+            tool_calc.name = "calculator"
+
+            with patch(
+                "xagent.core.tools.adapters.vibe.factory.ToolRegistry.create_registered_tools",
+                AsyncMock(return_value=[tool_browser, tool_calc]),
+            ):
+                result = await ToolFactory.create_all_tools(cfg)
+
+            tool_names = [t.name for t in result]
+            assert "browser_navigate" not in tool_names, (
+                "Disabled tool was NOT filtered from create_all_tools"
+            )
+            assert "calculator" in tool_names, "Non-disabled tool should remain"
+        finally:
+            set_user_tool_overrides_hook(None)
+
+    @pytest.mark.asyncio
+    async def test_create_all_tools_skips_filter_when_no_user_at_all(self):
+        """When neither explicit user nor request.user is set,
+        get_user_tool_overrides() returns {} and ToolFactory filtering is skipped.
+        This is the safe fallback — no user means no per-user policy can apply."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from xagent.core.tools.adapters.vibe.factory import ToolFactory
+        from xagent.web.services.tool_credentials import set_user_tool_overrides_hook
+        from xagent.web.tools.config import WebToolConfig
+
+        def _hook(db, user):
+            return {"browser_navigate": {"enabled": False}}
+
+        set_user_tool_overrides_hook(_hook)
+        try:
+            request_without_user = MagicMock()
+            del request_without_user.user
+
+            cfg = WebToolConfig(
+                db=MagicMock(),
+                request=request_without_user,
+                user_id=42,
+                # No explicit user passed — this is the pre-fix bug path
+                workspace_config={"base_dir": "/tmp", "task_id": "test"},
+            )
+
+            tool_browser = MagicMock()
+            tool_browser.name = "browser_navigate"
+            tool_calc = MagicMock()
+            tool_calc.name = "calculator"
+
+            with patch(
+                "xagent.core.tools.adapters.vibe.factory.ToolRegistry.create_registered_tools",
+                AsyncMock(return_value=[tool_browser, tool_calc]),
+            ):
+                result = await ToolFactory.create_all_tools(cfg)
+
+            tool_names = [t.name for t in result]
+            # Without explicit user, overrides are {} and filtering is skipped
+            assert "browser_navigate" in tool_names, (
+                "No filtering when no user (existing behavior)"
+            )
+            assert "calculator" in tool_names
+        finally:
+            set_user_tool_overrides_hook(None)
