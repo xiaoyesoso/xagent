@@ -4,7 +4,8 @@ import { Label } from "@/components/ui/label"
 import { Button } from "@/components/ui/button"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select-radix"
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible"
-import { ChevronDown, ChevronRight, Plus, Trash2 } from "lucide-react"
+import { Alert, AlertDescription } from "@/components/ui/alert"
+import { ChevronDown, ChevronRight, Info, Plus, Trash2 } from "lucide-react"
 import { useI18n } from "@/contexts/i18n-context"
 import { MCPServerFormData } from "./custom-api-form"
 
@@ -92,7 +93,6 @@ export function CustomMcpForm({
           placeholder={t('tools.mcp.form.descriptionPlaceholder')}
         />
       </div>
-
       <div className="space-y-2">
         <Label>{t('tools.mcp.dialog.transport')}</Label>
         <div className="flex bg-slate-100 p-1 rounded-md flex-wrap gap-1">
@@ -119,6 +119,12 @@ export function CustomMcpForm({
               onChange={(e) => updateConfig("command", e.target.value)}
               placeholder={t('tools.mcp.dialog.commandPlaceholder')}
             />
+            <Alert className="border-amber-200 bg-amber-50 text-amber-900">
+              <Info className="h-4 w-4 text-amber-700" />
+              <AlertDescription className="text-amber-800">
+                {t('tools.mcp.form.stdioSandboxHint')}
+              </AlertDescription>
+            </Alert>
           </div>
           <div className="space-y-2">
             <Label htmlFor="args">{t('tools.mcp.dialog.arguments')}</Label>

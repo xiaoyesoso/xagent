@@ -829,6 +829,7 @@ Build when you need.`
         descriptionLabel: "Description",
         descriptionPlaceholder: "Enter server description",
         fieldPlaceholderPrefix: "Please enter {field}",
+        stdioSandboxHint: "When sandboxing is enabled, `npx` and `uvx` will run inside the sandbox. Other commands will still run in the local environment because their dependencies cannot be determined reliably, so please verify their safety carefully.",
       },
       transports: {
         stdio: { label: "Standard I/O", description: "Communicate via standard input/output streams" },

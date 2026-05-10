@@ -650,6 +650,26 @@ class AgentServiceManager:
                             f"Task {task_id} is associated with published agent {current_agent.id} ({current_agent.name}), will exclude from agent tools"
                         )
 
+                # Get or create user sandbox for run task tools
+                user_id = int(user.id)
+                sandbox = self._sandboxes.get(user_id)
+                if sandbox is None:
+                    from ..sandbox_manager import get_sandbox_manager
+
+                    sandbox_mgr = get_sandbox_manager()
+                    if sandbox_mgr:
+                        try:
+                            sandbox = await sandbox_mgr.get_or_create_sandbox(
+                                "user", str(user_id)
+                            )
+                            self._sandboxes[user_id] = sandbox
+                        except Exception as e:
+                            # Graceful degradation: tools will run locally without sandbox
+                            logger.warning(
+                                f"Sandbox creation failed for user {user_id}, "
+                                f"falling back to local execution: {e}"
+                            )
+
                 # Filter tools by tool category using tool metadata
                 # Note: Tool names are stable, defined in code, no database storage needed
                 allowed_tools = None
@@ -673,6 +693,7 @@ class AgentServiceManager:
                         browser_tools_enabled=True,
                         allowed_collections=agent_config.get("knowledge_bases"),
                         allowed_skills=agent_config.get("skills"),
+                        sandbox=sandbox,
                     )
 
                     # Get all tools and filter by category
@@ -729,26 +750,6 @@ class AgentServiceManager:
                     logger.info(
                         f"Tool categories {tool_categories} mapped to {len(allowed_tools)} tools for task {task_id}"
                     )
-
-                # Get or create sandbox for this user
-                user_id = int(user.id)
-                sandbox = self._sandboxes.get(user_id)
-                if sandbox is None:
-                    from ..sandbox_manager import get_sandbox_manager
-
-                    sandbox_mgr = get_sandbox_manager()
-                    if sandbox_mgr:
-                        try:
-                            sandbox = await sandbox_mgr.get_or_create_sandbox(
-                                "user", str(user_id)
-                            )
-                            self._sandboxes[user_id] = sandbox
-                        except Exception as e:
-                            # Graceful degradation: tools will run locally without sandbox
-                            logger.warning(
-                                f"Sandbox creation failed for user {user_id}, "
-                                f"falling back to local execution: {e}"
-                            )
 
                 # Create tools using ToolFactory
                 tools = await create_default_tools(

@@ -14,6 +14,12 @@ from typing import Any, cast
 
 import cloudpickle  # type: ignore[import-untyped]
 
+# WARNING: This file runs as a standalone script in the sandbox, not a module.
+# Absolute imports only — relative imports are unavailable (no package context).
+from xagent.core.tools.adapters.vibe.sandboxed_tool.runner_utils import (
+    ensure_user_bin_in_path,
+)
+
 
 def _parse_args() -> argparse.Namespace:
     """Parse CLI arguments for sandboxed tool execution."""
@@ -110,6 +116,7 @@ def _execute_from_spec(
 
 def main() -> None:
     """CLI entrypoint for sandboxed tool execution."""
+    ensure_user_bin_in_path()
     try:
         parsed = _parse_args()
         execution_spec = _load_execution_spec(parsed)

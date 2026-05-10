@@ -829,6 +829,7 @@ Build when you need.`
         descriptionLabel: "描述",
         descriptionPlaceholder: "输入服务器描述",
         fieldPlaceholderPrefix: "请输入 {field}",
+        stdioSandboxHint: "开启沙盒后，`npx` 和 `uvx` 将在沙盒中执行；其他命令由于无法可靠判断其依赖关系，仍会在本地环境运行，请谨慎确认其安全性。",
       },
       transports: {
         stdio: { label: "标准输入输出", description: "通过标准输入输出流通信" },

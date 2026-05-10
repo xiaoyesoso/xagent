@@ -3152,6 +3152,20 @@ async def handle_build_preview_execution(
                 self.user: Any = type("obj", (), {"id": user_id})()
                 self.credentials: Any = None
 
+        # Get or create user sandbox for run preview task tools
+        from ..sandbox_manager import get_sandbox_manager
+
+        sandbox_manager = get_sandbox_manager()
+        sandbox = None
+        if sandbox_manager:
+            user_id = int(user.id)
+            try:
+                sandbox = await sandbox_manager.get_or_create_sandbox(
+                    "user", str(user_id)
+                )
+            except Exception as e:
+                logger.error(f"Failed to create sandbox for user {user_id}: {e}")
+
         # Filter tools by category - use tool metadata
         # Note: tool names are stable, defined in code, no database storage needed
         allowed_tools = []
@@ -3172,6 +3186,7 @@ async def handle_build_preview_execution(
                 include_mcp_tools=has_mcp,
                 task_id=None,
                 browser_tools_enabled=True,
+                sandbox=sandbox,
             )
 
             # Collect tools by category (async)
@@ -3262,24 +3277,8 @@ async def handle_build_preview_execution(
             include_mcp_tools=bool(
                 tool_categories and any(tc.startswith("mcp:") for tc in tool_categories)
             ),
+            sandbox=sandbox,
         )
-
-        # Create sandbox for preview task
-        from ..sandbox_manager import get_sandbox_manager
-
-        sandbox_manager = get_sandbox_manager()
-        sandbox = None
-        if sandbox_manager:
-            user_id = int(user.id)
-            try:
-                sandbox = await sandbox_manager.get_or_create_sandbox(
-                    "user", str(user_id)
-                )
-            except Exception as e:
-                logger.error(f"Failed to create sandbox for user {user_id}: {e}")
-
-            if sandbox:
-                tool_config.set_sandbox(sandbox)
 
         # Check if previewing a published agent, exclude it from agent tools
         preview_agent_id = message_data.get("agent_id")

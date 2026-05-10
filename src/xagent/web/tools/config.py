@@ -136,6 +136,7 @@ class WebToolConfig(BaseToolConfig):
         allowed_collections: Optional[List[str]] = None,
         allowed_skills: Optional[List[str]] = None,
         allowed_tools: Optional[List[str]] = None,
+        sandbox: Optional[Any] = None,
     ):
         self.db = db
         self.request = request
@@ -171,7 +172,7 @@ class WebToolConfig(BaseToolConfig):
         self._cached_tool_overrides: Optional[dict] = None
 
         # Sandbox instance - only store reference, lifecycle managed by upper layer
-        self._sandbox: Optional[Any] = None
+        self._sandbox: Optional[Any] = sandbox
 
         # Cache for loaded configurations
         self._cached_vision_config: Optional[Any] = None
