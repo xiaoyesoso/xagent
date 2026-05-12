@@ -1919,7 +1919,44 @@ def test_kb_ingest_passes_file_id_to_pipeline(test_env, temp_uploads):
         session.close()
 
 
-def test_kb_ingest_cloud_rollback_passes_admin_scope() -> None:
+def test_kb_ingest_setup_failure_cleans_new_collection_config(test_env, temp_uploads):
+    """Setup failures after config save should not leave config rows for new collections."""
+    app, headers, _user, _ = test_env
+    client = TestClient(app, raise_server_exceptions=False)
+    metadata_store = MagicMock()
+    metadata_store.save_collection_config = AsyncMock()
+    metadata_store.delete_collection_metadata = AsyncMock(
+        return_value={"metadata_rows": 0, "config_rows": 1}
+    )
+
+    with (
+        patch(
+            "xagent.core.tools.core.RAG_tools.storage.factory.get_metadata_store",
+            return_value=metadata_store,
+        ),
+        patch(
+            "xagent.web.api.kb._upsert_uploaded_file_record",
+            side_effect=RuntimeError("boom"),
+        ),
+    ):
+        response = client.post(
+            "/api/kb/ingest",
+            files={"file": ("test_doc.txt", b"content", "text/plain")},
+            data={"collection": "new_collection"},
+            headers=headers,
+        )
+
+    assert response.status_code == 500
+    metadata_store.delete_collection_metadata.assert_awaited_once_with(
+        collection_name="new_collection",
+        user_id=1,
+        is_admin=False,
+        delete_orphaned_metadata=True,
+    )
+
+
+@pytest.mark.asyncio
+async def test_kb_ingest_cloud_rollback_passes_admin_scope() -> None:
     """Local rollback should clear ingestion status with the caller's admin scope."""
 
     from xagent.core.tools.core.RAG_tools.core.schemas import IngestionResult
@@ -1940,7 +1977,7 @@ def test_kb_ingest_cloud_rollback_passes_admin_scope() -> None:
         patch("xagent.web.api.kb.clear_ingestion_status") as mock_clear_status,
         patch("xagent.web.api.kb._restore_ingest_file_backup"),
     ):
-        kb_module._rollback_failed_ingestion(
+        await kb_module._rollback_failed_ingestion(
             db=db,
             user=user,
             collection_name="cloud-coll",
@@ -1959,6 +1996,85 @@ def test_kb_ingest_cloud_rollback_passes_admin_scope() -> None:
         user_id=7,
         is_admin=True,
     )
+
+
+def test_kb_ingest_cloud_all_failures_clean_new_collection_config(test_env) -> None:
+    """Cloud ingest should remove saved config when a brand-new collection never ingests anything."""
+    app, headers, _user, _ = test_env
+    client = TestClient(app)
+    metadata_store = MagicMock()
+    metadata_store.save_collection_config = AsyncMock()
+    metadata_store.delete_collection_metadata = AsyncMock(
+        return_value={"metadata_rows": 0, "config_rows": 1}
+    )
+
+    with patch(
+        "xagent.core.tools.core.RAG_tools.storage.factory.get_metadata_store",
+        return_value=metadata_store,
+    ):
+        response = client.post(
+            "/api/kb/ingest-cloud",
+            json={
+                "collection": "cloud_new_collection",
+                "files": [
+                    {
+                        "provider": "unsupported",
+                        "fileId": "file-1",
+                        "fileName": "doc.txt",
+                    }
+                ],
+            },
+            headers=headers,
+        )
+
+    assert response.status_code == 200
+    assert response.json()[0]["status"] == "error"
+    metadata_store.delete_collection_metadata.assert_awaited_once_with(
+        collection_name="cloud_new_collection",
+        user_id=1,
+        is_admin=False,
+        delete_orphaned_metadata=True,
+    )
+
+
+def test_kb_ingest_cloud_denied_request_does_not_persist_collection_config(
+    test_env,
+) -> None:
+    from fastapi import HTTPException
+
+    app, headers, _user, _ = test_env
+    client = TestClient(app, raise_server_exceptions=False)
+    metadata_store = MagicMock()
+    metadata_store.save_collection_config = AsyncMock()
+
+    with (
+        patch(
+            "xagent.core.tools.core.RAG_tools.storage.factory.get_metadata_store",
+            return_value=metadata_store,
+        ),
+        patch(
+            "xagent.web.api.kb._ensure_collection_access",
+            new_callable=AsyncMock,
+            side_effect=HTTPException(status_code=403, detail="Forbidden"),
+        ),
+    ):
+        response = client.post(
+            "/api/kb/ingest-cloud",
+            json={
+                "collection": "shared_collection",
+                "files": [
+                    {
+                        "provider": "unsupported",
+                        "fileId": "file-1",
+                        "fileName": "doc.txt",
+                    }
+                ],
+            },
+            headers=headers,
+        )
+
+    assert response.status_code == 403
+    metadata_store.save_collection_config.assert_not_awaited()
 
 
 def test_kb_ingest_cloud_passes_file_id_to_pipeline(test_env, temp_uploads):
