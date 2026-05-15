@@ -26,7 +26,6 @@ from sqlalchemy.orm import Session
 
 from ...config import (
     get_agent_pattern_for_execution_mode,
-    get_agent_runtime,
     get_default_task_execution_mode,
     get_external_upload_dirs,
     get_uploads_dir,
@@ -221,7 +220,7 @@ def create_stream_event(
     }
 
 
-def _persist_agent_v2_outbound_event(task_id: int, event: Dict[str, Any]) -> None:
+def _persist_agent_outbound_event(task_id: int, event: Dict[str, Any]) -> None:
     """Persist v2 agent-to-user messages so waiting prompts survive reloads."""
 
     from ..models.task import Task as DatabaseTask
@@ -278,13 +277,15 @@ def _persist_agent_v2_outbound_event(task_id: int, event: Dict[str, Any]) -> Non
         db.commit()
     except Exception:
         db.rollback()
-        logger.exception("Failed to persist v2 outbound message for task %s", task_id)
+        logger.exception(
+            "Failed to persist agent outbound message for task %s", task_id
+        )
     finally:
         db.close()
 
 
-def make_agent_v2_outbound_handler(task_id: int) -> Any:
-    """Create a web bridge for agent_v2 agent-to-user messages."""
+def make_agent_outbound_handler(task_id: int) -> Any:
+    """Create a web bridge for agent agent-to-user messages."""
 
     async def handle_outbound_message(payload: Dict[str, Any]) -> None:
         event = create_stream_event(
@@ -298,24 +299,25 @@ def make_agent_v2_outbound_handler(task_id: int) -> Any:
                 "message_type": payload.get("message_type", "info"),
                 "expect_response": bool(payload.get("expect_response", False)),
                 "metadata": payload.get("metadata") or {},
-                "agent_runtime": "v2",
             },
         )
-        await asyncio.to_thread(_persist_agent_v2_outbound_event, task_id, event)
+        await asyncio.to_thread(_persist_agent_outbound_event, task_id, event)
         await manager.broadcast_to_task(event, task_id)
 
     return handle_outbound_message
 
 
-def _is_agent_v2_checkpoint_data(data: Any) -> bool:
-    """Return True for internal agent_v2 checkpoint payloads."""
+def _is_agent_checkpoint_data(data: Any) -> bool:
+    """Return True for internal agent checkpoint payloads."""
     if not isinstance(data, dict):
         return False
     try:
-        from ...core.agent_v2.checkpoint import CHECKPOINT_TYPE
+        from ...core.agent.checkpoint import READABLE_CHECKPOINT_TYPES
     except Exception:
-        CHECKPOINT_TYPE = "agent_v2_execution_checkpoint"
-    return data.get("checkpoint_type") == CHECKPOINT_TYPE or (
+        READABLE_CHECKPOINT_TYPES = frozenset(
+            {"agent_execution_checkpoint", "agent_v2_execution_checkpoint"}
+        )
+    return data.get("checkpoint_type") in READABLE_CHECKPOINT_TYPES or (
         data.get("type") == "checkpoint"
         and isinstance(data.get("pattern_state"), dict)
         and isinstance(data.get("context"), dict)
@@ -714,7 +716,7 @@ async def execute_task_background(
             )
             if hasattr(agent_service, "set_outbound_message_handler"):
                 agent_service.set_outbound_message_handler(
-                    make_agent_v2_outbound_handler(task_id)
+                    make_agent_outbound_handler(task_id)
                 )
 
             # Execute task with automatic token tracking
@@ -1041,14 +1043,14 @@ async def execute_continuation_background(
         background_task_manager.cleanup_task(task_id)
 
 
-async def execute_v2_resume_background(
+async def execute_resume_background(
     task_id: int,
     agent_service: Any,
     user: Any,
     task: Any,
     previous_task: Optional[asyncio.Task] = None,
 ) -> None:
-    """Resume an agent_v2 execution after an interrupt/user-message checkpoint."""
+    """Resume an agent execution after an interrupt/user-message checkpoint."""
     from ..models.database import get_db
     from ..models.task import Task, TaskStatus
 
@@ -1067,7 +1069,7 @@ async def execute_v2_resume_background(
                 await previous_task
             except Exception as e:
                 logger.warning(
-                    f"Previous v2 background task {task_id} ended before resume: {e}"
+                    f"Previous background task {task_id} ended before resume: {e}"
                 )
 
         db_gen = get_db()
@@ -1088,10 +1090,10 @@ async def execute_v2_resume_background(
 
         user_id = int(user.id) if user else None
         with UserContext(user_id):
-            result = await agent_service.resume_v2_execution(str(task_id))
+            result = await agent_service.resume_execution_by_id(str(task_id))
 
         if result is None:
-            logger.warning(f"No resumable v2 execution found for task {task_id}")
+            logger.warning(f"No resumable agent execution found for task {task_id}")
             return
 
         status = str(result.get("status") or "")
@@ -1786,9 +1788,7 @@ async def handle_chat_message(
                             title=task_title,
                             description=user_message,
                             status=TaskStatus.PENDING,  # Use PENDING instead of RUNNING
-                            execution_mode=get_default_task_execution_mode(
-                                agent_runtime=get_agent_runtime()
-                            ),
+                            execution_mode=get_default_task_execution_mode(),
                         )
                         db.add(task)
                         db.commit()
@@ -1956,7 +1956,7 @@ async def handle_chat_message(
                 )
                 if hasattr(agent_service, "set_outbound_message_handler"):
                     agent_service.set_outbound_message_handler(
-                        make_agent_v2_outbound_handler(task_id)
+                        make_agent_outbound_handler(task_id)
                     )
 
                 persisted_user_message = persist_user_message(
@@ -1980,14 +1980,14 @@ async def handle_chat_message(
                     TaskStatus.WAITING_FOR_USER,
                     TaskStatus.RUNNING,
                 ]
-                supports_v2_control = getattr(
-                    agent_service, "supports_v2_control", lambda: False
+                supports_live_control = getattr(
+                    agent_service, "supports_live_control", lambda: False
                 )()
                 has_continuation = dag_pattern and hasattr(
                     dag_pattern, "request_continuation"
                 )
 
-                if task_is_running and has_continuation and not supports_v2_control:
+                if task_is_running and has_continuation and not supports_live_control:
                     # Use continuation: old task will handle at appropriate time
                     logger.info(f"Using continuation for running task {task_id}")
                     assert dag_pattern is not None  # for mypy type checking
@@ -2066,8 +2066,8 @@ async def handle_chat_message(
 
                     # Continuation will be handled by old task, return directly
                     return
-                if task_is_running and supports_v2_control:
-                    logger.info(f"Using agent_v2 message control for task {task_id}")
+                if task_is_running and supports_live_control:
+                    logger.info(f"Using agent message control for task {task_id}")
                     posted = await agent_service.post_user_message(
                         str(task_id),
                         user_message_for_llm,
@@ -2076,12 +2076,12 @@ async def handle_chat_message(
                     )
                     if not posted:
                         logger.warning(
-                            f"agent_v2 execution {task_id} was not live; attempting resume from checkpoint"
+                            f"agent execution {task_id} was not live; attempting resume from checkpoint"
                         )
 
                     previous_task = background_task_manager.running_tasks.get(task_id)
                     bg_task = asyncio.create_task(
-                        execute_v2_resume_background(
+                        execute_resume_background(
                             task_id=task_id,
                             agent_service=agent_service,
                             user=user,
@@ -2375,7 +2375,7 @@ async def handle_execute_task(
             )
             if hasattr(agent_service, "set_outbound_message_handler"):
                 agent_service.set_outbound_message_handler(
-                    make_agent_v2_outbound_handler(task_id)
+                    make_agent_outbound_handler(task_id)
                 )
             recovery_state = await load_task_execution_recovery_state(db, task_id)
             agent_service.set_execution_context_messages(
@@ -2637,7 +2637,7 @@ async def send_historical_data_as_stream(
                 normalized_event_data = normalized_trace_data_by_event_id.get(
                     str(trace_event.event_id), trace_event.data
                 )
-                if _is_agent_v2_checkpoint_data(normalized_event_data):
+                if _is_agent_checkpoint_data(normalized_event_data):
                     continue
                 if historical_path_to_file_id and isinstance(
                     normalized_event_data, dict
@@ -3122,7 +3122,7 @@ async def handle_resume_task(
             )
             return
 
-        if getattr(agent_service, "supports_v2_control", lambda: False)():
+        if getattr(agent_service, "supports_live_control", lambda: False)():
             await manager.broadcast_to_task(
                 {
                     "type": "task_resumed",
@@ -3134,7 +3134,7 @@ async def handle_resume_task(
             )
             previous_task = background_task_manager.running_tasks.get(task_id)
             bg_task = asyncio.create_task(
-                execute_v2_resume_background(
+                execute_resume_background(
                     task_id=task_id,
                     agent_service=agent_service,
                     user=user,
@@ -3255,8 +3255,8 @@ async def handle_builder_chat(
     """
     import uuid
 
+    from ...core.agent.context.enrichment import build_skill_context
     from ...core.agent.service import AgentService
-    from ...core.agent_v2.context.enrichment import build_skill_context
     from ...core.memory.in_memory import InMemoryMemoryStore
     from ...skills.utils import create_skill_manager
     from ..models.database import get_db
@@ -3361,7 +3361,7 @@ clarification questions as plain assistant text.
 """
 
         async def send_builder_outbound_message(payload: Dict[str, Any]) -> None:
-            """Bridge agent_v2 agent-to-user messages to the builder chat socket."""
+            """Bridge agent agent-to-user messages to the builder chat socket."""
             await websocket.send_text(
                 json.dumps(
                     create_stream_event(
@@ -3377,7 +3377,6 @@ clarification questions as plain assistant text.
                                 payload.get("expect_response", False)
                             ),
                             "metadata": payload.get("metadata") or {},
-                            "agent_runtime": "v2",
                         },
                     )
                 )
@@ -3486,7 +3485,6 @@ clarification questions as plain assistant text.
                     create_kb_file_tool,
                 ],
                 pattern="react",
-                agent_runtime="v2",
                 id=builder_task_id,
                 enable_workspace=True,
                 workspace_base_dir=str(get_uploads_dir() / "builder_chat"),
@@ -3728,8 +3726,8 @@ async def websocket_build_preview_endpoint(
                     if execution_id is None:
                         execution_id = getattr(agent_service, "id", None)
                     if (
-                        getattr(agent_service, "supports_v2_control", None)
-                        and agent_service.supports_v2_control()
+                        getattr(agent_service, "supports_live_control", None)
+                        and agent_service.supports_live_control()
                     ):
                         if execution_id is None:
                             await websocket.send_text(
@@ -3831,7 +3829,7 @@ async def handle_build_preview_resume_execution(
     user: User,
     execution_id: str,
 ) -> None:
-    """Resume a paused build preview execution for agent_v2 runtimes."""
+    """Resume a paused build preview execution from its latest checkpoint."""
     try:
         agent_service = getattr(websocket.state, "preview_agent_service", None)
         if agent_service is None:
@@ -3855,7 +3853,7 @@ async def handle_build_preview_resume_execution(
         )
 
         with UserContext(int(user.id)):
-            result = await agent_service.resume_v2_execution(str(execution_id))
+            result = await agent_service.resume_execution_by_id(str(execution_id))
 
         if result is None:
             await websocket.send_text(
