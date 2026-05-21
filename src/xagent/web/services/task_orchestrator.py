@@ -53,6 +53,7 @@ from typing import Any, Dict, List, Optional
 
 from ..models.task import Task, TaskStatus
 from ..models.user import User
+from .hot_path_cache import invalidate_task_cache
 from .task_lease_service import (
     acquire_task_lease,
     get_runner_id,
@@ -306,6 +307,7 @@ class TaskTurnOrchestrator:
             else:
                 before_message_id = None
             db.commit()
+            invalidate_task_cache(task_id)
         except TaskTurnError:
             raise
         except Exception:
@@ -428,6 +430,7 @@ def finish_turn(bg_db: Any, task_id: int) -> None:
             fresh.output = latest_assistant.content
             fresh.error_message = None
             bg_db.commit()
+            invalidate_task_cache(task_id)
             logger.info(
                 "finish_turn: task %s output written (%d chars)",
                 task_id,
@@ -454,6 +457,7 @@ def finish_turn(bg_db: Any, task_id: int) -> None:
             changed = True
         if changed:
             bg_db.commit()
+            invalidate_task_cache(task_id)
             logger.info(
                 "finish_turn: task %s marked failed (cleared stale output)",
                 task_id,
@@ -490,6 +494,7 @@ def finish_turn(bg_db: Any, task_id: int) -> None:
         fresh.error_message = "Task execution failed without status update; see /steps."
         fresh.output = None  # latest-turn snapshot invariant
         bg_db.commit()
+        invalidate_task_cache(task_id)
         logger.warning(
             "finish_turn: task %s bg coroutine returned with status=RUNNING; "
             "flipping to FAILED",

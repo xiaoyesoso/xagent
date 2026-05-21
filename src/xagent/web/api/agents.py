@@ -30,6 +30,13 @@ from ..schemas.agent_api_key import (
     APIKeyMetadataResponse,
     APIKeyRevokeResponse,
 )
+from ..services.hot_path_cache import (
+    agent_detail_key,
+    agent_list_key,
+    cache_get,
+    cache_set,
+    invalidate_agent_cache,
+)
 from ..services.llm_utils import UserAwareModelStorage
 from ..tools.config import WebToolConfig
 from ..user_isolated_memory import UserContext
@@ -462,6 +469,7 @@ async def create_agent(
                 db.commit()
                 db.refresh(agent)
 
+        invalidate_agent_cache(int(current_user.id), int(agent.id))
         logger.info(f"Created agent {agent.id} for user {current_user.id}")
         return _agent_to_response(agent, db)
 
@@ -480,6 +488,11 @@ async def list_agents(
 ) -> List[AgentListItem]:
     """List all agents for the current user."""
     try:
+        cache_key = agent_list_key(int(current_user.id))
+        cached = cache_get(cache_key)
+        if isinstance(cached, list):
+            return [AgentListItem.model_validate(item) for item in cached]
+
         agents = (
             db.query(Agent)
             .filter(Agent.user_id == current_user.id)
@@ -487,7 +500,7 @@ async def list_agents(
             .all()
         )
 
-        return [
+        response = [
             AgentListItem(
                 id=agent.id,
                 name=agent.name,
@@ -503,6 +516,8 @@ async def list_agents(
             )
             for agent in agents
         ]
+        cache_set(cache_key, [item.model_dump(mode="json") for item in response])
+        return response
 
     except Exception as e:
         logger.error(f"Failed to list agents: {e}")
@@ -517,6 +532,11 @@ async def get_agent(
 ) -> AgentResponse:
     """Get agent details."""
     try:
+        cache_key = agent_detail_key(int(current_user.id), agent_id)
+        cached = cache_get(cache_key)
+        if isinstance(cached, dict):
+            return AgentResponse.model_validate(cached)
+
         agent = (
             db.query(Agent)
             .filter(Agent.id == agent_id, Agent.user_id == current_user.id)
@@ -526,7 +546,9 @@ async def get_agent(
         if not agent:
             raise HTTPException(status_code=404, detail="Agent not found")
 
-        return _agent_to_response(agent, db)
+        response = _agent_to_response(agent, db)
+        cache_set(cache_key, response.model_dump(mode="json"))
+        return response
 
     except HTTPException:
         raise
@@ -619,6 +641,7 @@ async def update_agent(
         db.commit()
         db.refresh(agent)
 
+        invalidate_agent_cache(int(current_user.id), agent_id)
         logger.info(f"Updated agent {agent_id} for user {current_user.id}")
         return _agent_to_response(agent, db)
 
@@ -656,6 +679,7 @@ async def delete_agent(
         db.delete(agent)
         db.commit()
 
+        invalidate_agent_cache(int(current_user.id), agent_id)
         logger.info(f"Deleted agent {agent_id} for user {current_user.id}")
         return {"message": "Agent deleted successfully"}
 
@@ -695,6 +719,7 @@ async def publish_agent(
         db.commit()
         db.refresh(agent)
 
+        invalidate_agent_cache(int(current_user.id), agent_id)
         logger.info(f"Published agent {agent_id} for user {current_user.id}")
         return PublishResponse(
             message="Agent published successfully", agent=_agent_to_response(agent, db)
@@ -735,6 +760,7 @@ async def unpublish_agent(
         db.commit()
         db.refresh(agent)
 
+        invalidate_agent_cache(int(current_user.id), agent_id)
         logger.info(f"Unpublished agent {agent_id} for user {current_user.id}")
         return PublishResponse(
             message="Agent unpublished successfully",
@@ -780,6 +806,7 @@ async def upload_agent_logo(
         db.commit()
         db.refresh(agent)
 
+        invalidate_agent_cache(int(current_user.id), agent_id)
         logger.info(f"Updated logo for agent {agent_id}")
         return {"logo_url": logo_url}
 
