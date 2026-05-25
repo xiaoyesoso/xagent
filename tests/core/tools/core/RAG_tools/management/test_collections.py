@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from src.xagent.core.tools.core.RAG_tools.core.exceptions import DatabaseOperationError
 from src.xagent.core.tools.core.RAG_tools.core.schemas import DocumentProcessingStatus
 from src.xagent.core.tools.core.RAG_tools.LanceDB.model_tag_utils import (
     embeddings_table_name,
@@ -556,14 +557,14 @@ def test_delete_collection_preserves_partial_vector_cleanup(
     assert result.warnings == [warnings_from_store]
 
 
-def test_delete_collection_non_admin_uses_document_scoped_deletes(
+def test_delete_collection_non_admin_uses_batched_document_scoped_delete(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Non-admin collection delete should avoid collection-wide legacy cleanup."""
 
     class FakeVectorStore:
         def __init__(self) -> None:
-            self.document_delete_calls: list[tuple[str, str, int | None, bool]] = []
+            self.documents_delete_calls: list[dict[str, object]] = []
 
         def list_document_records(self, **_kwargs: object) -> list[DocumentRecord]:
             return [
@@ -576,6 +577,10 @@ def test_delete_collection_non_admin_uses_document_scoped_deletes(
                 "non-admin delete must not use collection-wide cleanup"
             )
 
+        def delete_documents_data(self, **_kwargs: object) -> dict[str, int]:
+            self.documents_delete_calls.append(dict(_kwargs))
+            return {"chunks": 2}
+
         def delete_document_data(
             self,
             *,
@@ -584,10 +589,7 @@ def test_delete_collection_non_admin_uses_document_scoped_deletes(
             user_id: int | None,
             is_admin: bool,
         ) -> dict[str, int]:
-            self.document_delete_calls.append(
-                (collection_name, doc_id, user_id, is_admin)
-            )
-            return {"chunks": 1}
+            raise AssertionError("collection delete should not fan out per document")
 
     store = FakeVectorStore()
     monkeypatch.setattr(collections_module, "get_vector_index_store", lambda: store)
@@ -600,10 +602,52 @@ def test_delete_collection_non_admin_uses_document_scoped_deletes(
     result = delete_collection("shared", user_id=7, is_admin=False)
 
     assert result.status == "success"
-    assert store.document_delete_calls == [
-        ("shared", "doc-1", 7, False),
-        ("shared", "doc-2", 7, False),
-    ]
+    assert len(store.documents_delete_calls) == 1
+    assert store.documents_delete_calls[0]["collection_name"] == "shared"
+    assert store.documents_delete_calls[0]["doc_ids"] == ["doc-1", "doc-2"]
+    assert store.documents_delete_calls[0]["user_id"] == 7
+    assert store.documents_delete_calls[0]["is_admin"] is False
+
+
+def test_delete_collection_reports_partial_batched_delete_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Prior successful batches should be visible when a later batch fails."""
+
+    class FakeVectorStore:
+        def list_document_records(self, **kwargs: object) -> list[DocumentRecord]:
+            if kwargs.get("is_admin") is True:
+                return []
+            return [
+                DocumentRecord(doc_id="doc-1", file_id=None, source_path=None),
+                DocumentRecord(doc_id="doc-2", file_id=None, source_path=None),
+            ]
+
+        def delete_collection_data(self, **_kwargs: object) -> dict[str, int]:
+            raise AssertionError(
+                "non-admin delete must not use collection-wide cleanup"
+            )
+
+        def delete_documents_data(self, **kwargs: object) -> dict[str, int]:
+            kwargs["warnings_out"].append("Failed to delete document batch 2: boom")
+            raise DatabaseOperationError(
+                "Failed to delete document batch",
+                details={
+                    "deleted_counts": {"documents": 1, "chunks": 2},
+                    "deleted_doc_ids": ["doc-1"],
+                },
+            )
+
+    monkeypatch.setattr(
+        collections_module, "get_vector_index_store", lambda: FakeVectorStore()
+    )
+
+    result = delete_collection("shared", user_id=7, is_admin=False)
+
+    assert result.status == "partial_success"
+    assert result.deleted_counts == {"documents": 1, "chunks": 2}
+    assert result.warnings == ["Failed to delete document batch 2: boom"]
+    assert [detail.doc_id for detail in result.affected_documents] == ["doc-1"]
 
 
 def test_delete_collection_reports_success_when_only_orphan_artifacts_deleted(

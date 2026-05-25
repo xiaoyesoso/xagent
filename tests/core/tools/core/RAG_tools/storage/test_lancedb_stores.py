@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 
+from xagent.core.tools.core.RAG_tools.core.exceptions import DatabaseOperationError
 from xagent.core.tools.core.RAG_tools.storage.lancedb_stores import (
     LanceDBIngestionStatusStore,
     LanceDBMainPointerStore,
@@ -572,6 +573,91 @@ def test_delete_collection_data_delegates_to_cascade_delete(
 
     assert deleted_counts == {"documents": 1, "parses": 1}
     assert warnings == []
+
+
+@patch(
+    "xagent.core.tools.core.RAG_tools.version_management.cascade_cleaner.cascade_delete_documents"
+)
+@patch(
+    "xagent.core.tools.core.RAG_tools.storage.lancedb_stores.get_connection_from_env"
+)
+def test_delete_documents_data_delegates_to_batched_cascade_delete(
+    mock_get_connection: Mock,
+    mock_cascade_delete_documents: Mock,
+) -> None:
+    """delete_documents_data should batch document-scoped cascade deletes."""
+
+    mock_conn = Mock()
+    mock_get_connection.return_value = mock_conn
+    mock_cascade_delete_documents.return_value = {"documents": 2, "chunks": 4}
+
+    store = LanceDBVectorIndexStore()
+    warnings: List[str] = []
+
+    deleted_counts = store.delete_documents_data(
+        "demo",
+        ["doc-2", "doc-1", "doc-1"],
+        user_id=7,
+        is_admin=False,
+        warnings_out=warnings,
+    )
+
+    mock_cascade_delete_documents.assert_called_once()
+    called = mock_cascade_delete_documents.call_args.kwargs
+    assert called["collection"] == "demo"
+    assert called["doc_ids"] == ["doc-1", "doc-2"]
+    assert called["user_id"] == 7
+    assert called["is_admin"] is False
+    assert called["preview_only"] is False
+    assert called["confirm"] is True
+    assert called["conn"] is mock_conn
+
+    assert deleted_counts == {"documents": 2, "chunks": 4}
+    assert warnings == []
+
+
+@patch(
+    "xagent.core.tools.core.RAG_tools.version_management.cascade_cleaner.cascade_delete_documents"
+)
+@patch(
+    "xagent.core.tools.core.RAG_tools.storage.lancedb_stores.get_connection_from_env"
+)
+def test_delete_documents_data_invalidates_cache_and_reports_partial_counts_on_failure(
+    mock_get_connection: Mock,
+    mock_cascade_delete_documents: Mock,
+) -> None:
+    """A later batch failure should not hide prior batch progress."""
+
+    mock_conn = Mock()
+    mock_get_connection.return_value = mock_conn
+    mock_cascade_delete_documents.side_effect = [
+        {"documents": 100, "chunks": 200},
+        RuntimeError("batch failed"),
+    ]
+
+    store = LanceDBVectorIndexStore()
+    store.invalidate_table_cache = Mock()  # type: ignore[method-assign]
+    warnings: List[str] = []
+    doc_ids = [f"doc-{idx:03d}" for idx in range(101)]
+
+    with pytest.raises(DatabaseOperationError) as exc_info:
+        store.delete_documents_data(
+            "demo",
+            doc_ids,
+            user_id=7,
+            is_admin=False,
+            warnings_out=warnings,
+        )
+
+    assert mock_cascade_delete_documents.call_count == 2
+    store.invalidate_table_cache.assert_called_once()
+    assert warnings == ["Failed to delete document batch 2: batch failed"]
+    assert exc_info.value.details["deleted_counts"] == {
+        "documents": 100,
+        "chunks": 200,
+    }
+    assert exc_info.value.details["deleted_doc_ids"] == doc_ids[:100]
+    assert exc_info.value.details["failed_batch_index"] == 2
 
 
 # --- Upsert Fallback Tests ---
