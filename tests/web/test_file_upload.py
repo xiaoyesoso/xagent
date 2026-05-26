@@ -13,7 +13,7 @@ from sqlalchemy.orm import sessionmaker
 
 from xagent.core.file_storage.factory import get_file_storage
 from xagent.web.api.auth import hash_password
-from xagent.web.api.files import file_router
+from xagent.web.api.files import _content_disposition_header, file_router
 from xagent.web.auth_config import JWT_ALGORITHM, JWT_SECRET_KEY
 from xagent.web.models.database import Base, get_db
 from xagent.web.models.uploaded_file import UploadedFile
@@ -158,6 +158,12 @@ def _corrupt_durable_copy_and_remove_local(
 class TestFileUpload:
     """Test file upload functionality"""
 
+    def test_content_disposition_header_escapes_filename_and_adds_utf8_parameter(self):
+        assert _content_disposition_header("attachment", 'quo"te\\文\r\n.txt') == (
+            'attachment; filename="quo\\"te\\\\___.txt"; '
+            "filename*=UTF-8''quo%22te%5C%E6%96%87%0D%0A.txt"
+        )
+
     def test_upload_text_file_success(
         self, client, test_db, sample_files, temp_uploads_dir, auth_headers
     ):
@@ -209,6 +215,197 @@ class TestFileUpload:
 
         assert download.status_code == 200
         assert download.content == b"durable content"
+
+    def test_download_redirects_to_signed_durable_url_when_enabled(
+        self, client, temp_uploads_dir, auth_headers, monkeypatch
+    ):
+        from xagent.web.services.managed_file_ref import ManagedFileRef
+
+        monkeypatch.setenv("XAGENT_FILE_DELIVERY_REDIRECT_ENABLED", "true")
+        monkeypatch.setenv("XAGENT_FILE_DELIVERY_SIGNED_URL_TTL_SECONDS", "42")
+        response = client.post(
+            "/api/files/upload",
+            files={"file": ("redirect.txt", b"redirect content", "text/plain")},
+            data={"task_type": "general"},
+            headers=auth_headers,
+        )
+        assert response.status_code == 200
+        file_id = response.json()["file_id"]
+        calls = []
+
+        def signed_access_url(
+            self,
+            *,
+            expires,
+            content_type=None,
+            content_disposition=None,
+        ):
+            calls.append(
+                (
+                    self.storage_key,
+                    expires,
+                    content_type,
+                    content_disposition,
+                )
+            )
+            return "https://cdn.example.com/private/redirect.txt?sig=abc"
+
+        monkeypatch.setattr(ManagedFileRef, "signed_access_url", signed_access_url)
+
+        download = client.get(
+            f"/api/files/download/{file_id}",
+            headers=auth_headers,
+            follow_redirects=False,
+        )
+
+        assert download.status_code == 307
+        assert (
+            download.headers["location"]
+            == "https://cdn.example.com/private/redirect.txt?sig=abc"
+        )
+        assert len(calls) == 1
+        storage_key, expires, content_type, content_disposition = calls[0]
+        assert storage_key.endswith(f"/{file_id}/redirect.txt")
+        assert expires == 42
+        assert content_type == "text/plain"
+        assert (
+            content_disposition
+            == "inline; filename=\"redirect.txt\"; filename*=UTF-8''redirect.txt"
+        )
+
+    def test_preview_redirects_to_signed_durable_url_when_enabled(
+        self, client, temp_uploads_dir, auth_headers, monkeypatch
+    ):
+        from xagent.web.services.managed_file_ref import ManagedFileRef
+
+        monkeypatch.setenv("XAGENT_FILE_DELIVERY_REDIRECT_ENABLED", "true")
+        response = client.post(
+            "/api/files/upload",
+            files={"file": ("preview.txt", b"preview content", "text/plain")},
+            data={"task_type": "general"},
+            headers=auth_headers,
+        )
+        assert response.status_code == 200
+        file_id = response.json()["file_id"]
+
+        def signed_access_url(
+            self,
+            *,
+            expires,
+            content_type=None,
+            content_disposition=None,
+        ):
+            del self, expires, content_type, content_disposition
+            return "https://cdn.example.com/private/preview.txt?sig=abc"
+
+        monkeypatch.setattr(ManagedFileRef, "signed_access_url", signed_access_url)
+
+        preview = client.get(
+            f"/api/files/preview/{file_id}",
+            headers=auth_headers,
+            follow_redirects=False,
+        )
+
+        assert preview.status_code == 307
+        assert (
+            preview.headers["location"]
+            == "https://cdn.example.com/private/preview.txt?sig=abc"
+        )
+
+    def test_download_uses_accel_redirect_for_local_file_when_enabled(
+        self, client, temp_uploads_dir, auth_headers, monkeypatch
+    ):
+        del temp_uploads_dir
+        monkeypatch.setenv("XAGENT_FILE_DELIVERY_ACCEL_REDIRECT_ENABLED", "true")
+        monkeypatch.setenv(
+            "XAGENT_FILE_DELIVERY_ACCEL_REDIRECT_PREFIX", "/private-files"
+        )
+        response = client.post(
+            "/api/files/upload",
+            files={
+                "file": (
+                    "local accel.txt",
+                    b"local accel content",
+                    "text/plain",
+                )
+            },
+            data={"task_type": "general"},
+            headers=auth_headers,
+        )
+        assert response.status_code == 200
+        file_id = response.json()["file_id"]
+
+        download = client.get(
+            f"/api/files/download/{file_id}",
+            headers=auth_headers,
+            follow_redirects=False,
+        )
+
+        assert download.status_code == 200
+        assert download.content == b""
+        assert "location" not in download.headers
+        assert download.headers["x-accel-redirect"].endswith(
+            f"/user_1/{quote('local accel.txt')}"
+        )
+        assert download.headers["content-type"].startswith("text/plain")
+        assert (
+            download.headers["content-disposition"]
+            == 'inline; filename="local accel.txt"; '
+            "filename*=UTF-8''local%20accel.txt"
+        )
+
+    def test_preview_uses_accel_redirect_for_local_text_when_enabled(
+        self, client, temp_uploads_dir, auth_headers, monkeypatch
+    ):
+        del temp_uploads_dir
+        monkeypatch.setenv("XAGENT_FILE_DELIVERY_ACCEL_REDIRECT_ENABLED", "true")
+        response = client.post(
+            "/api/files/upload",
+            files={"file": ("preview-accel.txt", b"preview accel", "text/plain")},
+            data={"task_type": "general"},
+            headers=auth_headers,
+        )
+        assert response.status_code == 200
+        file_id = response.json()["file_id"]
+
+        preview = client.get(
+            f"/api/files/preview/{file_id}",
+            headers=auth_headers,
+            follow_redirects=False,
+        )
+
+        assert preview.status_code == 200
+        assert preview.content == b""
+        assert preview.headers["x-accel-redirect"].endswith("/user_1/preview-accel.txt")
+        assert (
+            preview.headers["content-disposition"]
+            == 'inline; filename="preview-accel.txt"; '
+            "filename*=UTF-8''preview-accel.txt"
+        )
+
+    def test_preview_does_not_accel_redirect_html(
+        self, client, temp_uploads_dir, auth_headers, monkeypatch
+    ):
+        del temp_uploads_dir
+        monkeypatch.setenv("XAGENT_FILE_DELIVERY_ACCEL_REDIRECT_ENABLED", "true")
+        response = client.post(
+            "/api/files/upload",
+            files={"file": ("index.html", b"<h1>preview</h1>", "text/html")},
+            data={"task_type": "general"},
+            headers=auth_headers,
+        )
+        assert response.status_code == 200
+        file_id = response.json()["file_id"]
+
+        preview = client.get(
+            f"/api/files/preview/{file_id}",
+            headers=auth_headers,
+            follow_redirects=False,
+        )
+
+        assert preview.status_code == 200
+        assert "x-accel-redirect" not in preview.headers
+        assert preview.content == b"<h1>preview</h1>"
 
     def test_upload_remote_storage_outage_returns_503_and_rolls_back(
         self, client, test_db, temp_uploads_dir, auth_headers, monkeypatch
@@ -335,6 +532,50 @@ class TestFileUpload:
         assert download.status_code == 409
         assert "re-upload" in download.json()["detail"]
         assert not list(temp_uploads_dir.rglob("integrity-download.txt"))
+
+    def test_download_redirect_enabled_checksum_mismatch_asks_user_to_reupload(
+        self, client, temp_uploads_dir, auth_headers, monkeypatch, tmp_path
+    ):
+        from xagent.core.file_storage.storage import FsspecFileStorage
+
+        object_root = tmp_path / "objects"
+        monkeypatch.setenv("XAGENT_FILE_STORAGE_URI", object_root.as_uri())
+        monkeypatch.setenv("XAGENT_FILE_DELIVERY_REDIRECT_ENABLED", "true")
+        get_file_storage.cache_clear()
+
+        upload = client.post(
+            "/api/files/upload",
+            files={
+                "file": (
+                    "integrity-redirect-download.txt",
+                    b"expected redirect download content",
+                    "text/plain",
+                )
+            },
+            data={"task_type": "general"},
+            headers=auth_headers,
+        )
+        assert upload.status_code == 200
+        file_id = upload.json()["file_id"]
+        _corrupt_durable_copy_and_remove_local(
+            object_root, temp_uploads_dir, "integrity-redirect-download.txt"
+        )
+
+        def fail_signed_url(self, key, **kwargs):
+            del self, key, kwargs
+            raise AssertionError("signed URL should not be generated")
+
+        monkeypatch.setattr(FsspecFileStorage, "signed_url", fail_signed_url)
+
+        download = client.get(
+            f"/api/files/download/{file_id}",
+            headers=auth_headers,
+            follow_redirects=False,
+        )
+
+        assert download.status_code == 409
+        assert "re-upload" in download.json()["detail"]
+        assert not list(temp_uploads_dir.rglob("integrity-redirect-download.txt"))
 
     def test_download_registered_file_rejects_local_path_outside_uploads(
         self, client, test_db, tmp_path, auth_headers
@@ -492,6 +733,50 @@ class TestFileUpload:
 
         assert preview.status_code == 409
         assert "re-upload" in preview.json()["detail"]
+
+    def test_preview_redirect_enabled_checksum_mismatch_asks_user_to_reupload(
+        self, client, temp_uploads_dir, auth_headers, monkeypatch, tmp_path
+    ):
+        from xagent.core.file_storage.storage import FsspecFileStorage
+
+        object_root = tmp_path / "objects"
+        monkeypatch.setenv("XAGENT_FILE_STORAGE_URI", object_root.as_uri())
+        monkeypatch.setenv("XAGENT_FILE_DELIVERY_REDIRECT_ENABLED", "true")
+        get_file_storage.cache_clear()
+
+        upload = client.post(
+            "/api/files/upload",
+            files={
+                "file": (
+                    "integrity-redirect-preview.txt",
+                    b"expected redirect preview content",
+                    "text/plain",
+                )
+            },
+            data={"task_type": "general"},
+            headers=auth_headers,
+        )
+        assert upload.status_code == 200
+        file_id = upload.json()["file_id"]
+        _corrupt_durable_copy_and_remove_local(
+            object_root, temp_uploads_dir, "integrity-redirect-preview.txt"
+        )
+
+        def fail_signed_url(self, key, **kwargs):
+            del self, key, kwargs
+            raise AssertionError("signed URL should not be generated")
+
+        monkeypatch.setattr(FsspecFileStorage, "signed_url", fail_signed_url)
+
+        preview = client.get(
+            f"/api/files/preview/{file_id}",
+            headers=auth_headers,
+            follow_redirects=False,
+        )
+
+        assert preview.status_code == 409
+        assert "re-upload" in preview.json()["detail"]
+        assert not list(temp_uploads_dir.rglob("integrity-redirect-preview.txt"))
 
     def test_public_preview_checksum_mismatch_asks_user_to_reupload(
         self, client, temp_uploads_dir, monkeypatch, tmp_path, auth_headers
