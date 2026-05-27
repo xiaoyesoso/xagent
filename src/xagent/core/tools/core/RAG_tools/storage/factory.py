@@ -96,6 +96,11 @@ class StorageFactory:
             self._main_pointer_store = None
             self._coordinator = None
 
+        # Keep semantic KB coordinator state aligned with factory-backed stores.
+        from ..kb import reset_kb_coordinator_for_tests
+
+        reset_kb_coordinator_for_tests()
+
     # --- VectorIndexStore ---
 
     def get_vector_index_store(self) -> VectorIndexStore:
@@ -269,6 +274,12 @@ def reset_rag_storage_for_tests() -> None:
         # Future: clear Qdrant client singleton when implemented.
         pass
     reset_kb_write_coordinator()
+
+    # Clear semantic coordinator state without introducing a storage -> kb
+    # import cycle at module import time.
+    from ..kb import reset_kb_coordinator_for_tests
+
+    reset_kb_coordinator_for_tests()
 
     # Clear global collection locks to prevent test-to-test lock contamination
     from xagent.core.tools.core.RAG_tools.management import collection_manager
