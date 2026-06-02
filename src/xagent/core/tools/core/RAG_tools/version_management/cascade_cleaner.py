@@ -12,6 +12,15 @@ from typing import TYPE_CHECKING, Any, Dict, Optional
 from typing_extensions import Literal
 
 from ..core.exceptions import CascadeCleanupError
+from ..kb.cleanup_filters import (
+    KBCleanupScope,
+    append_user_filter_for_table,
+    append_user_filter_without_schema,
+    build_embedding_cleanup_filters,
+    build_embedding_cleanup_filters_from_base,
+    select_embedding_tables,
+)
+from ..kb.cleanup_filters import table_has_column as _table_has_column
 from ..LanceDB.schema_manager import (
     _safe_close_table,
     ensure_chunks_table,
@@ -43,17 +52,39 @@ def _get_version_compatibility_facade() -> "KBVersionCompatibilityFacade":
     return get_kb_coordinator().version_compatibility
 
 
-def _table_has_column(table: Any, column: str) -> bool:
-    try:
-        schema = getattr(table, "schema", None)
-        if schema is None:
-            return False
-        names = getattr(schema, "names", None)
-        if not isinstance(names, list):
-            return False
-        return column in names
-    except Exception:
-        return False
+FilterPredicateMap = Dict[str, list[str]]
+
+
+def _replace_predicate(
+    predicates: FilterPredicateMap, table_name: str, filter_expr: str
+) -> None:
+    _replace_predicates(predicates, table_name, [filter_expr])
+
+
+def _replace_predicates(
+    predicates: FilterPredicateMap, table_name: str, filter_exprs: list[str]
+) -> None:
+    predicates[table_name] = list(filter_exprs)
+
+
+def _append_predicates(
+    predicates: FilterPredicateMap, table_name: str, filter_exprs: list[str]
+) -> None:
+    predicates.setdefault(table_name, []).extend(filter_exprs)
+
+
+def _count_rows_by_filters(table: Any, filter_exprs: list[str]) -> int:
+    return sum(_safe_count_rows(table, filter_expr) for filter_expr in filter_exprs)
+
+
+def _delete_rows_by_filters(table: Any, filter_exprs: list[str]) -> int:
+    deleted_count = 0
+    for filter_expr in filter_exprs:
+        count = _safe_count_rows(table, filter_expr)
+        if count > 0:
+            table.delete(filter_expr)
+        deleted_count += count
+    return deleted_count
 
 
 def _build_collection_filter(
@@ -174,49 +205,45 @@ def _append_user_filter_if_needed(
     is_admin: bool,
 ) -> str:
     """Append user_id filter when non-admin and table contains user_id."""
-    if is_admin or user_id is None:
-        return base_expr
     table = None
     try:
         table = conn.open_table(table_name)
-        if _table_has_column(table, "user_id"):
-            return (
-                f"{base_expr} AND {build_user_id_filter_for_table(table, int(user_id))}"
-            )
+        return append_user_filter_for_table(
+            table=table,
+            filter_expr=base_expr,
+            user_id=user_id,
+            is_admin=is_admin,
+        )
     except Exception:
-        return base_expr
+        return append_user_filter_without_schema(
+            filter_expr=base_expr,
+            user_id=user_id,
+            is_admin=is_admin,
+        )
     finally:
         _safe_close_table(table)
-    return base_expr
 
 
-def _append_user_filter_for_embeddings_if_needed(
+def _replace_embedding_predicates(
     *,
+    predicates: FilterPredicateMap,
     conn: Any,
     base_expr: str,
     user_id: Optional[int],
     is_admin: bool,
     model_tag: Optional[str] = None,
-) -> str:
-    """Append user filter for embeddings by inspecting embeddings table schema."""
-    if is_admin or user_id is None:
-        return base_expr
-    table_names = _get_table_names(conn)
-    target_tables = [t for t in table_names if t.startswith("embeddings_")]
-    if model_tag is not None:
-        target_tables = [t for t in target_tables if t == f"embeddings_{model_tag}"]
-    if not target_tables:
-        return base_expr
-    table = None
-    try:
-        table = conn.open_table(target_tables[0])
-        if not _table_has_column(table, "user_id"):
-            return base_expr
-        return f"{base_expr} AND {build_user_id_filter_for_table(table, int(user_id))}"
-    except Exception:
-        return base_expr
-    finally:
-        _safe_close_table(table)
+) -> None:
+    """Expand an embeddings cleanup predicate per target embeddings table."""
+    table_filters = build_embedding_cleanup_filters_from_base(
+        conn,
+        base_filter=base_expr,
+        user_id=user_id,
+        is_admin=is_admin,
+        model_tag=model_tag,
+    )
+    for table_name, filter_exprs in table_filters.items():
+        if filter_exprs:
+            _replace_predicates(predicates, table_name, filter_exprs)
 
 
 def _get_table_names(conn: Any) -> list[str]:
@@ -228,13 +255,13 @@ def _get_table_names(conn: Any) -> list[str]:
 
 
 def _plan_by_predicates(
-    conn: Any, table_to_filter: Dict[str, str], model_tag: Optional[str] = None
+    conn: Any, table_to_filter: FilterPredicateMap, model_tag: Optional[str] = None
 ) -> Dict[str, int]:
     """Count rows that match each table predicate without deleting.
 
     Args:
         conn: LanceDB connection
-        table_to_filter: Mapping of table name -> filter expression
+        table_to_filter: Mapping of table name -> filter expressions
         model_tag: Optional model tag to filter embeddings tables. If specified,
                    only the embeddings table matching this model will be counted.
 
@@ -250,29 +277,25 @@ def _plan_by_predicates(
             table = None
             try:
                 table = conn.open_table(t)
-                counts[t] = _safe_count_rows(table, table_to_filter[t])
+                counts[t] = _count_rows_by_filters(table, table_to_filter[t])
             finally:
                 _safe_close_table(table)
 
-    for table_name, filt in table_to_filter.items():
+    for table_name, filter_exprs in table_to_filter.items():
         # Special fan-out handling for embeddings preview like deleter
         if table_name == "__embeddings__":
             total = 0
-            all_embed_tables = [t for t in table_names if t.startswith("embeddings_")]
-            # Apply model_tag filter if specified (must match _delete_by_predicates logic)
-            if model_tag:
-                all_embed_tables = [
-                    t for t in all_embed_tables if t == f"embeddings_{model_tag}"
-                ]
-            for t in all_embed_tables:
+            target_tables = select_embedding_tables(conn, model_tag=model_tag)
+            for t in target_tables:
                 table = None
                 try:
                     table = conn.open_table(t)
-                    count = _safe_count_rows(table, filt)
-                    total += count
+                    total += _count_rows_by_filters(table, filter_exprs)
                 finally:
                     _safe_close_table(table)
             counts[table_name] = total
+            continue
+        if table_name.startswith("embeddings_"):
             continue
 
         if table_name not in table_names:
@@ -281,7 +304,7 @@ def _plan_by_predicates(
         table = None
         try:
             table = conn.open_table(table_name)
-            count = _safe_count_rows(table, filt)
+            count = _count_rows_by_filters(table, filter_exprs)
             counts[table_name] = count
         finally:
             _safe_close_table(table)
@@ -289,7 +312,7 @@ def _plan_by_predicates(
 
 
 def _delete_by_predicates(
-    conn: Any, table_to_filter: Dict[str, str], model_tag: Optional[str] = None
+    conn: Any, table_to_filter: FilterPredicateMap, model_tag: Optional[str] = None
 ) -> Dict[str, int]:
     """Delete rows by table predicates in a fixed, safe order.
 
@@ -309,13 +332,12 @@ def _delete_by_predicates(
     for t in table_names:
         if not t.startswith("embeddings_") or t not in table_to_filter:
             continue
-        filt = table_to_filter[t]
+        filter_exprs = table_to_filter[t]
         table = None
         try:
             table = conn.open_table(t)
-            cnt = _safe_count_rows(table, filt)
+            cnt = _delete_rows_by_filters(table, filter_exprs)
             if cnt > 0:
-                table.delete(filt)
                 logger.info("Cascade cleanup: deleted %s rows from %s", cnt, t)
             deleted[t] = cnt
         finally:
@@ -333,26 +355,16 @@ def _delete_by_predicates(
 
     # First handle embeddings fan-out
     if "__embeddings__" in table_to_filter:
-        filt = table_to_filter["__embeddings__"]
+        filter_exprs = table_to_filter["__embeddings__"]
         total = 0
 
-        # Filter embeddings tables based on model_tag if specified
-        all_embed_tables = [t for t in table_names if t.startswith("embeddings_")]
-        if model_tag is not None:
-            target_tables = [
-                t for t in all_embed_tables if t == f"embeddings_{model_tag}"
-            ]
-        else:
-            target_tables = all_embed_tables
+        target_tables = select_embedding_tables(conn, model_tag=model_tag)
 
         for t in target_tables:
             table = None
             try:
                 table = conn.open_table(t)
-                cnt = _safe_count_rows(table, filt)
-                if cnt > 0:
-                    table.delete(filt)
-                total += cnt
+                total += _delete_rows_by_filters(table, filter_exprs)
             finally:
                 _safe_close_table(table)
         deleted["embeddings"] = total
@@ -364,20 +376,18 @@ def _delete_by_predicates(
     # Then handle known tables
     for name in order[1:]:
         if name in table_to_filter and name in table_names:
-            filt = table_to_filter[name]
             table = None
             try:
                 table = conn.open_table(name)
-                cnt = _safe_count_rows(table, filt)
+                cnt = _delete_rows_by_filters(table, table_to_filter[name])
                 if cnt > 0:
-                    table.delete(filt)
                     logger.info("Cascade cleanup: deleted %s rows from %s", cnt, name)
                 deleted[name] = cnt
             finally:
                 _safe_close_table(table)
 
     # Finally, handle any remaining custom tables once
-    for name, filt in table_to_filter.items():
+    for name, filter_exprs in table_to_filter.items():
         if name in (
             "__embeddings__",
             "chunks",
@@ -393,15 +403,33 @@ def _delete_by_predicates(
         table = None
         try:
             table = conn.open_table(name)
-            cnt = _safe_count_rows(table, filt)
+            cnt = _delete_rows_by_filters(table, filter_exprs)
             if cnt > 0:
-                table.delete(filt)
                 logger.info("Cascade cleanup: deleted %s rows from %s", cnt, name)
             deleted[name] = cnt
         finally:
             _safe_close_table(table)
 
     return deleted
+
+
+def _should_execute_delete(*, preview_only: bool, confirm: bool) -> bool:
+    """Return whether a destructive cleanup should execute."""
+    return bool(confirm and not preview_only)
+
+
+def _execute_or_plan_by_predicates(
+    conn: Any,
+    predicates: FilterPredicateMap,
+    *,
+    preview_only: bool,
+    confirm: bool,
+    model_tag: Optional[str] = None,
+) -> Dict[str, int]:
+    """Plan unless deletion is explicitly confirmed outside preview mode."""
+    if not _should_execute_delete(preview_only=preview_only, confirm=confirm):
+        return _plan_by_predicates(conn, predicates, model_tag=model_tag)
+    return _delete_by_predicates(conn, predicates, model_tag=model_tag)
 
 
 def cascade_delete(
@@ -475,59 +503,58 @@ def _cascade_delete_impl(
     ensure_ingestion_runs_table(conn)
 
     table_names = _get_table_names(conn)
-    predicates: Dict[str, str] = {}
+    predicates: FilterPredicateMap = {}
 
-    # Core known tables
     core_tables = ["documents", "parses", "chunks", "main_pointers", "ingestion_runs"]
-    for t in core_tables:
-        if t not in table_names:
+    for table_name in core_tables:
+        if table_name not in table_names:
             continue
         if target == "collection":
-            predicates[t] = _build_collection_filter(
+            filter_expr = _build_collection_filter(
                 conn=conn,
-                table_name=t,
+                table_name=table_name,
                 collection=collection,
                 user_id=user_id,
                 is_admin=is_admin,
             )
         else:
-            predicates[t] = _build_document_filter(
+            filter_expr = _build_document_filter(
                 conn=conn,
-                table_name=t,
+                table_name=table_name,
                 collection=collection,
                 doc_id=str(doc_id),
                 user_id=user_id,
                 is_admin=is_admin,
             )
+        _replace_predicate(predicates, table_name, filter_expr)
 
-    # Embeddings tables: expand explicitly so we can safely include user_id filter
-    for t in table_names:
-        if not t.startswith("embeddings_"):
-            continue
-        if model_tag is not None and t != f"embeddings_{model_tag}":
-            continue
+    for table_name in select_embedding_tables(conn, model_tag=model_tag):
         if target == "collection":
-            predicates[t] = _build_collection_filter(
+            filter_expr = _build_collection_filter(
                 conn=conn,
-                table_name=t,
+                table_name=table_name,
                 collection=collection,
                 user_id=user_id,
                 is_admin=is_admin,
             )
         else:
-            predicates[t] = _build_document_filter(
+            filter_expr = _build_document_filter(
                 conn=conn,
-                table_name=t,
+                table_name=table_name,
                 collection=collection,
                 doc_id=str(doc_id),
                 user_id=user_id,
                 is_admin=is_admin,
             )
+        _replace_predicate(predicates, table_name, filter_expr)
 
-    if preview_only and not confirm:
-        return _plan_by_predicates(conn, predicates, model_tag=None)
-
-    return _delete_by_predicates(conn, predicates, model_tag=None)
+    return _execute_or_plan_by_predicates(
+        conn,
+        predicates,
+        preview_only=preview_only,
+        confirm=confirm,
+        model_tag=None,
+    )
 
 
 def cascade_delete_documents(
@@ -565,13 +592,13 @@ def cascade_delete_documents(
     ensure_ingestion_runs_table(conn)
 
     table_names = _get_table_names(conn)
-    predicates: Dict[str, str] = {}
+    predicates: FilterPredicateMap = {}
 
     core_tables = ["documents", "parses", "chunks", "main_pointers", "ingestion_runs"]
     for table_name in core_tables:
         if table_name not in table_names:
             continue
-        predicates[table_name] = _build_documents_filter(
+        filter_expr = _build_documents_filter(
             conn=conn,
             table_name=table_name,
             collection=collection,
@@ -579,11 +606,10 @@ def cascade_delete_documents(
             user_id=user_id,
             is_admin=is_admin,
         )
+        _replace_predicate(predicates, table_name, filter_expr)
 
-    for table_name in table_names:
-        if not table_name.startswith("embeddings_"):
-            continue
-        predicates[table_name] = _build_documents_filter(
+    for table_name in select_embedding_tables(conn):
+        filter_expr = _build_documents_filter(
             conn=conn,
             table_name=table_name,
             collection=collection,
@@ -591,11 +617,15 @@ def cascade_delete_documents(
             user_id=user_id,
             is_admin=is_admin,
         )
+        _replace_predicate(predicates, table_name, filter_expr)
 
-    if preview_only and not confirm:
-        return _plan_by_predicates(conn, predicates, model_tag=None)
-
-    return _delete_by_predicates(conn, predicates, model_tag=None)
+    return _execute_or_plan_by_predicates(
+        conn,
+        predicates,
+        preview_only=preview_only,
+        confirm=confirm,
+        model_tag=None,
+    )
 
 
 def cleanup_cascade(
@@ -654,7 +684,6 @@ def _cleanup_cascade_impl(
     Returns:
         Deleted (or planned) counts per table scope
     """
-    # Default to admin=True for system-level version promotion operations
     if is_admin is None:
         is_admin = True
     user_scope = resolve_user_scope(user_id=user_id, is_admin=is_admin)
@@ -690,16 +719,14 @@ def _cleanup_cascade_impl(
             "ingestion_runs": int(raw.get("ingestion_runs", 0)),
         }
 
-    predicates: Dict[str, str] = {}
+    predicates: FilterPredicateMap = {}
 
     if scope == "parse":
-        # Fill old from pointer if needed
         if old_parse_hash is None:
             pointer = get_main_pointer(collection, doc_id, "parse")
             old_parse_hash = pointer["technical_id"] if pointer else None
 
         if old_parse_hash:
-            # Build safe filter expression for old parse hash
             base_filters = {
                 "collection": collection,
                 "doc_id": doc_id,
@@ -708,53 +735,65 @@ def _cleanup_cascade_impl(
             base = build_lancedb_filter_expression(
                 base_filters, user_id=user_id, is_admin=is_admin, skip_user_filter=True
             )
-            predicates["__embeddings__"] = _append_user_filter_for_embeddings_if_needed(
+            _replace_embedding_predicates(
+                predicates=predicates,
                 conn=conn,
                 base_expr=base,
                 user_id=user_id,
                 is_admin=is_admin,
                 model_tag=model_tag,
             )
-            predicates["chunks"] = _append_user_filter_if_needed(
-                conn=conn,
-                table_name="chunks",
-                base_expr=base,
-                user_id=user_id,
-                is_admin=is_admin,
+            _replace_predicate(
+                predicates,
+                "chunks",
+                _append_user_filter_if_needed(
+                    conn=conn,
+                    table_name="chunks",
+                    base_expr=base,
+                    user_id=user_id,
+                    is_admin=is_admin,
+                ),
             )
         if new_parse_hash:
-            # Build safe filter expression for new parse hash (using != operator)
             escaped_collection = escape_lancedb_string(collection)
             escaped_doc_id = escape_lancedb_string(doc_id)
             escaped_new_parse_hash = escape_lancedb_string(new_parse_hash)
             other = f"collection == '{escaped_collection}' AND doc_id == '{escaped_doc_id}' AND parse_hash != '{escaped_new_parse_hash}'"
-            predicates["__embeddings__"] = _append_user_filter_for_embeddings_if_needed(
+            _replace_embedding_predicates(
+                predicates=predicates,
                 conn=conn,
                 base_expr=other,
                 user_id=user_id,
                 is_admin=is_admin,
                 model_tag=model_tag,
             )
-            predicates["chunks"] = _append_user_filter_if_needed(
-                conn=conn,
-                table_name="chunks",
-                base_expr=other,
-                user_id=user_id,
-                is_admin=is_admin,
+            _replace_predicate(
+                predicates,
+                "chunks",
+                _append_user_filter_if_needed(
+                    conn=conn,
+                    table_name="chunks",
+                    base_expr=other,
+                    user_id=user_id,
+                    is_admin=is_admin,
+                ),
             )
-            predicates["parses"] = _append_user_filter_if_needed(
-                conn=conn,
-                table_name="parses",
-                base_expr=other,
-                user_id=user_id,
-                is_admin=is_admin,
+            _replace_predicate(
+                predicates,
+                "parses",
+                _append_user_filter_if_needed(
+                    conn=conn,
+                    table_name="parses",
+                    base_expr=other,
+                    user_id=user_id,
+                    is_admin=is_admin,
+                ),
             )
     elif scope == "chunk":
         if old_parse_hash is None:
             pointer = get_main_pointer(collection, doc_id, "chunk")
             old_parse_hash = pointer["technical_id"] if pointer else None
         if old_parse_hash:
-            # Build safe filter expression for old parse hash
             base_filters = {
                 "collection": collection,
                 "doc_id": doc_id,
@@ -763,7 +802,8 @@ def _cleanup_cascade_impl(
             base = build_lancedb_filter_expression(
                 base_filters, user_id=user_id, is_admin=is_admin, skip_user_filter=True
             )
-            predicates["__embeddings__"] = _append_user_filter_for_embeddings_if_needed(
+            _replace_embedding_predicates(
+                predicates=predicates,
                 conn=conn,
                 base_expr=base,
                 user_id=user_id,
@@ -771,43 +811,41 @@ def _cleanup_cascade_impl(
                 model_tag=model_tag,
             )
         if new_parse_hash:
-            # Note: For != operator, we need to manually construct the filter
-            # as build_lancedb_filter_expression only supports == operator
             escaped_collection = escape_lancedb_string(collection)
             escaped_doc_id = escape_lancedb_string(doc_id)
             escaped_parse_hash = escape_lancedb_string(new_parse_hash)
             other = f"collection == '{escaped_collection}' AND doc_id == '{escaped_doc_id}' AND parse_hash != '{escaped_parse_hash}'"
-            predicates["__embeddings__"] = _append_user_filter_for_embeddings_if_needed(
+            _replace_embedding_predicates(
+                predicates=predicates,
                 conn=conn,
                 base_expr=other,
                 user_id=user_id,
                 is_admin=is_admin,
                 model_tag=model_tag,
             )
-            predicates["chunks"] = _append_user_filter_if_needed(
-                conn=conn,
-                table_name="chunks",
-                base_expr=other,
-                user_id=user_id,
-                is_admin=is_admin,
+            _replace_predicate(
+                predicates,
+                "chunks",
+                _append_user_filter_if_needed(
+                    conn=conn,
+                    table_name="chunks",
+                    base_expr=other,
+                    user_id=user_id,
+                    is_admin=is_admin,
+                ),
             )
     elif scope == "embeddings":
-        # Build per-embeddings-table predicates so user_id filtering is based on
-        # each embeddings table's own schema (forward/backward compatible).
-        table_names = _get_table_names(conn)
-        for t in table_names:
-            if not t.startswith("embeddings_"):
-                continue
-            if model_tag is not None and t != f"embeddings_{model_tag}":
-                continue
-            predicates[t] = _build_document_filter(
-                conn=conn,
-                table_name=t,
-                collection=collection,
-                doc_id=doc_id,
-                user_id=user_id,
-                is_admin=is_admin,
-            )
+        scope_obj = KBCleanupScope(
+            collection=collection,
+            doc_id=doc_id,
+            user_id=user_id,
+            is_admin=is_admin,
+            model_tag=model_tag,
+        )
+        filters_by_table = build_embedding_cleanup_filters(conn, scope_obj)
+        for table_name, filter_exprs in filters_by_table.items():
+            if filter_exprs:
+                _append_predicates(predicates, table_name, filter_exprs)
     elif scope == "pointers":
         filt = _build_document_filter(
             conn=conn,
@@ -817,26 +855,33 @@ def _cleanup_cascade_impl(
             user_id=user_id,
             is_admin=is_admin,
         )
-        predicates["main_pointers"] = filt
+        _replace_predicate(predicates, "main_pointers", filt)
     else:
         raise CascadeCleanupError(f"Unsupported scope: {scope}")
 
-    if preview_only and not confirm:
-        planned = _plan_by_predicates(conn, predicates, model_tag=model_tag)
-        if "__embeddings__" in planned:
-            planned["embeddings"] = planned.pop("__embeddings__")
-        elif scope == "embeddings":
-            planned["embeddings"] = sum(
-                int(v) for k, v in planned.items() if str(k).startswith("embeddings_")
-            )
-        return planned
+    result = _execute_or_plan_by_predicates(
+        conn,
+        predicates,
+        preview_only=preview_only,
+        confirm=confirm,
+        model_tag=model_tag,
+    )
+    if scope in {"parse", "chunk", "embeddings"}:
+        return _collapse_embedding_table_counts(result)
+    return result
 
-    deleted = _delete_by_predicates(conn, predicates, model_tag=model_tag)
-    if scope == "embeddings" and "__embeddings__" not in predicates:
-        deleted["embeddings"] = sum(
-            int(v) for k, v in deleted.items() if str(k).startswith("embeddings_")
-        )
-    return deleted
+
+def _collapse_embedding_table_counts(counts: Dict[str, int]) -> Dict[str, int]:
+    """Collapse concrete embeddings table counts into the legacy summary key."""
+    collapsed = dict(counts)
+    embeddings_total = int(collapsed.pop("__embeddings__", 0)) + int(
+        collapsed.pop("embeddings", 0)
+    )
+    for table_name in list(collapsed):
+        if str(table_name).startswith("embeddings_"):
+            embeddings_total += int(collapsed.pop(table_name, 0))
+    collapsed["embeddings"] = embeddings_total
+    return collapsed
 
 
 def cleanup_document_cascade(
