@@ -1442,9 +1442,18 @@ async def execute_task_background(
                     else:
                         task_updated.status = TaskStatus.FAILED
                     sync_workforce_run_status(db_new, task_updated, task_updated.status)
-                    db_new.commit()
+                    # Do NOT commit the terminal status here. Leave it
+                    # pending so the assistant-message persistence below
+                    # commits it atomically: the task is marked terminal
+                    # only once the turn is durably complete. If that write
+                    # fails, the status stays RUNNING and the outer except
+                    # surfaces a real failure -- instead of leaving a
+                    # COMPLETED row with no assistant message. Control
+                    # statuses (PAUSED / WAITING_FOR_USER) above commit
+                    # themselves; they have no assistant message to persist.
                     logger.info(
-                        f"Updated task {task_id} status to {task_updated.status.value}"
+                        f"Task {task_id} marked {task_updated.status.value} "
+                        "(pending commit with assistant message)"
                     )
                 else:
                     logger.info(
@@ -1482,6 +1491,17 @@ async def execute_task_background(
                         if isinstance(chat_response, dict)
                         else None,
                     )
+                    # Commit the pending terminal status. ``persist_assistant_message``
+                    # commits internally when it writes a row, but it
+                    # early-returns WITHOUT committing when the assistant
+                    # content is empty (a valid empty-reply turn). This
+                    # explicit commit lands the terminal status in that
+                    # case too, so an empty successful turn stays COMPLETED
+                    # rather than being left RUNNING (and later flipped to
+                    # FAILED by finish_turn). If persistence raised, control
+                    # never reaches here -- the status stays uncommitted and
+                    # the outer except surfaces a real failure.
+                    db_new.commit()
 
             # Materialize broadcast metadata into primitives BEFORE the
             # ``finally`` block closes ``db_new``. ``task_updated`` is
@@ -1596,25 +1616,57 @@ async def execute_task_background(
         logger.info(f"Background task {task_id} execution completed")
 
     except Exception as e:
-        logger.error(f"Background task {task_id} execution failed: {e}", exc_info=True)
-        # Send error event
+        # The outer try also spans the post-terminal steps -- assistant
+        # message persistence and the completion / paused broadcasts --
+        # that run *after* the task status was already committed terminal
+        # (COMPLETED above). ``_terminal_task_error_payload`` writes FAILED
+        # + the real error_message unconditionally, so gate it on the
+        # task's current status: only a task still RUNNING is a genuine
+        # execution failure. Otherwise a failed post-completion broadcast
+        # would rewrite an already-COMPLETED task as FAILED and store the
+        # broadcast error as the task's failure cause.
+        status_db = get_session_local()()
         try:
-            message = str(e)
-            await manager.broadcast_to_task(
-                {
-                    **_terminal_task_error_payload(
-                        task_id,
-                        message,
-                        event_type="task_error",
-                    ),
-                    "task_id": task_id,
-                    "error": message,
-                    "timestamp": datetime.now(timezone.utc).timestamp(),
-                },
-                task_id,
+            current = status_db.query(Task).filter(Task.id == task_id).first()
+            still_running = current is not None and (
+                current.status == TaskStatus.RUNNING
             )
-        except Exception as broadcast_error:
-            logger.error(f"Failed to send error notification: {broadcast_error}")
+        finally:
+            status_db.close()
+
+        if not still_running:
+            # Terminal state already committed; the exception came from a
+            # best-effort post-completion step. Observe it without touching
+            # the row or emitting a contradictory task_error. ``finish_turn``
+            # still reconciles the terminal fields afterward.
+            logger.warning(
+                f"Background task {task_id} post-terminal step failed; "
+                f"task state left unchanged: {e}",
+                exc_info=True,
+            )
+        else:
+            logger.error(
+                f"Background task {task_id} execution failed: {e}", exc_info=True
+            )
+            # Genuine failure: _terminal_task_error_payload persists FAILED
+            # + the real error_message and builds the notification payload.
+            try:
+                message = str(e)
+                await manager.broadcast_to_task(
+                    {
+                        **_terminal_task_error_payload(
+                            task_id,
+                            message,
+                            event_type="task_error",
+                        ),
+                        "task_id": task_id,
+                        "error": message,
+                        "timestamp": datetime.now(timezone.utc).timestamp(),
+                    },
+                    task_id,
+                )
+            except Exception as broadcast_error:
+                logger.error(f"Failed to send error notification: {broadcast_error}")
     except asyncio.CancelledError:
         logger.info(f"Background task {task_id} cancelled")
         raise

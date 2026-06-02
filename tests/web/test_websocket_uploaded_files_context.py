@@ -203,6 +203,268 @@ async def test_execute_task_background_reuses_task_id_for_terminal_tasks(
     assert captured["agent_task"] == "重试"
 
 
+class _NoopAgentService:
+    def set_conversation_history(self, history):
+        pass
+
+    def set_execution_context_messages(self, messages):
+        pass
+
+    def set_recovered_skill_context(self, skill_context):
+        pass
+
+
+class _NoopBackgroundTaskManager:
+    async def wait_for_previous(self, task_id):
+        pass
+
+    def cleanup_task(self, task_id):
+        pass
+
+
+def _wire_execute_task_background(monkeypatch, db_session, manager):
+    """Wire execute_task_background's collaborators to the test session.
+
+    ``get_session_local`` is pointed at the same engine as ``db_session``
+    so the failure handler's status probe (and the terminal payload
+    writer, when not stubbed) read the row the test committed.
+    """
+
+    def fake_get_db():
+        yield db_session
+
+    def fake_release(db, task_id, *, status):
+        return True
+
+    test_sessionmaker = sessionmaker(bind=db_session.get_bind())
+
+    monkeypatch.setattr(
+        websocket_api, "background_task_manager", _NoopBackgroundTaskManager()
+    )
+    monkeypatch.setattr(websocket_api, "manager", manager)
+    monkeypatch.setattr(
+        websocket_api,
+        "release_current_runner_task_lease_with_workforce_sync",
+        fake_release,
+    )
+    monkeypatch.setattr(websocket_api, "get_session_local", lambda: test_sessionmaker)
+    monkeypatch.setattr(database_models, "get_db", fake_get_db)
+
+    def fake_persist_assistant_message(db, *args, **kwargs):
+        # The real helper commits the session; mirror that so the pending
+        # terminal status set by execute_task_background is durably landed
+        # (the status commit now rides on the assistant-message write).
+        db.commit()
+
+    monkeypatch.setattr(
+        "xagent.web.services.chat_history_service.persist_assistant_message",
+        fake_persist_assistant_message,
+    )
+
+
+@pytest.mark.asyncio
+async def test_completion_broadcast_failure_keeps_task_completed(
+    db_session, monkeypatch
+):
+    """A failure in the post-completion broadcast must not be treated as an
+    execution failure: the already-COMPLETED row is left untouched, no
+    task_error is emitted, and the terminal failure writer is not invoked."""
+    user = _create_user(db_session, 1, "owner")
+    _create_task(db_session, task_id=10, user_id=1, status=TaskStatus.RUNNING)
+    db_session.commit()
+
+    sent_events: list[object] = []
+    payload_calls: list[tuple] = []
+
+    class BroadcastManager:
+        async def broadcast_to_task(self, event, task_id):
+            etype = event.get("type") if isinstance(event, dict) else None
+            sent_events.append(etype)
+            if etype == "task_completed":
+                raise RuntimeError("websocket client disconnected")
+
+    class AgentManager:
+        async def get_agent_for_task(self, task_id, db, **kwargs):
+            return _NoopAgentService()
+
+        async def execute_task(self, **kwargs):
+            return {"success": True, "output": "ok", "file_outputs": []}
+
+    def fake_payload(task_id, message, *, event_type="agent_error"):
+        payload_calls.append((task_id, message, event_type))
+        return {"type": event_type, "task_id": task_id}
+
+    _wire_execute_task_background(monkeypatch, db_session, BroadcastManager())
+    monkeypatch.setattr(websocket_api, "_terminal_task_error_payload", fake_payload)
+
+    await execute_task_background(
+        task_id=10,
+        user_message="hi",
+        context={},
+        agent_manager=AgentManager(),
+        user_id=int(user.id),
+        llm_user_message="hi",
+    )
+
+    db_session.expire_all()
+    task = db_session.query(Task).filter(Task.id == 10).first()
+    assert task.status == TaskStatus.COMPLETED
+    assert task.error_message is None
+    assert "task_completed" in sent_events
+    assert "task_error" not in sent_events
+    assert payload_calls == []
+
+
+@pytest.mark.asyncio
+async def test_execution_failure_routes_real_error_to_terminal_payload(
+    db_session, monkeypatch
+):
+    """A genuine execution failure (task still RUNNING) routes the real
+    exception text through _terminal_task_error_payload (which persists
+    FAILED + error_message) and emits task_error."""
+    user = _create_user(db_session, 1, "owner")
+    _create_task(db_session, task_id=11, user_id=1, status=TaskStatus.RUNNING)
+    db_session.commit()
+
+    sent_events: list[object] = []
+    payload_calls: list[tuple] = []
+
+    class BroadcastManager:
+        async def broadcast_to_task(self, event, task_id):
+            sent_events.append(event.get("type") if isinstance(event, dict) else None)
+
+    class AgentManager:
+        async def get_agent_for_task(self, task_id, db, **kwargs):
+            return _NoopAgentService()
+
+        async def execute_task(self, **kwargs):
+            raise RuntimeError("agent boom xyz")
+
+    def fake_payload(task_id, message, *, event_type="agent_error"):
+        payload_calls.append((task_id, message, event_type))
+        return {"type": event_type, "task_id": task_id}
+
+    _wire_execute_task_background(monkeypatch, db_session, BroadcastManager())
+    monkeypatch.setattr(websocket_api, "_terminal_task_error_payload", fake_payload)
+
+    await execute_task_background(
+        task_id=11,
+        user_message="hi",
+        context={},
+        agent_manager=AgentManager(),
+        user_id=int(user.id),
+        llm_user_message="hi",
+    )
+
+    assert payload_calls == [(11, "agent boom xyz", "task_error")]
+    assert "task_error" in sent_events
+
+
+@pytest.mark.asyncio
+async def test_assistant_persist_failure_surfaces_as_task_failure(
+    db_session, monkeypatch
+):
+    """Assistant-message persistence is a durable write, not best-effort.
+    If it fails after a successful agent result, the terminal status must
+    not have been committed (it is pending until the message lands), so
+    the failure is surfaced through _terminal_task_error_payload rather
+    than leaving a COMPLETED row with no message."""
+    user = _create_user(db_session, 1, "owner")
+    _create_task(db_session, task_id=12, user_id=1, status=TaskStatus.RUNNING)
+    db_session.commit()
+
+    payload_calls: list[tuple] = []
+
+    class BroadcastManager:
+        async def broadcast_to_task(self, event, task_id):
+            pass
+
+    class AgentManager:
+        async def get_agent_for_task(self, task_id, db, **kwargs):
+            return _NoopAgentService()
+
+        async def execute_task(self, **kwargs):
+            return {"success": True, "output": "ok", "file_outputs": []}
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("durable persist failed")
+
+    def fake_payload(task_id, message, *, event_type="agent_error"):
+        payload_calls.append((task_id, event_type))
+        return {"type": event_type, "task_id": task_id}
+
+    _wire_execute_task_background(monkeypatch, db_session, BroadcastManager())
+    # Override the no-op persist with one that fails (durable write error).
+    monkeypatch.setattr(
+        "xagent.web.services.chat_history_service.persist_assistant_message", boom
+    )
+    monkeypatch.setattr(websocket_api, "_terminal_task_error_payload", fake_payload)
+
+    await execute_task_background(
+        task_id=12,
+        user_message="hi",
+        context={},
+        agent_manager=AgentManager(),
+        user_id=int(user.id),
+        llm_user_message="hi",
+    )
+
+    # The COMPLETED status was never committed (pending until the message
+    # write that failed), so the status probe still sees RUNNING and the
+    # failure is routed to the terminal payload writer.
+    assert payload_calls == [(12, "task_error")]
+
+
+@pytest.mark.asyncio
+async def test_empty_reply_turn_still_completes(db_session, monkeypatch):
+    """An empty assistant reply makes persist_assistant_message
+    early-return WITHOUT committing. The explicit terminal commit must
+    still land COMPLETED, so a successful empty turn is not left RUNNING
+    (and later flipped to FAILED by finish_turn)."""
+    user = _create_user(db_session, 1, "owner")
+    _create_task(db_session, task_id=13, user_id=1, status=TaskStatus.RUNNING)
+    db_session.commit()
+
+    payload_calls: list[tuple] = []
+
+    class BroadcastManager:
+        async def broadcast_to_task(self, event, task_id):
+            pass
+
+    class AgentManager:
+        async def get_agent_for_task(self, task_id, db, **kwargs):
+            return _NoopAgentService()
+
+        async def execute_task(self, **kwargs):
+            return {"success": True, "output": "ok", "file_outputs": []}
+
+    def fake_payload(task_id, message, *, event_type="agent_error"):
+        payload_calls.append((task_id, event_type))
+        return {"type": event_type, "task_id": task_id}
+
+    _wire_execute_task_background(monkeypatch, db_session, BroadcastManager())
+    # Empty-content path: persist early-returns None without committing.
+    monkeypatch.setattr(
+        "xagent.web.services.chat_history_service.persist_assistant_message",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(websocket_api, "_terminal_task_error_payload", fake_payload)
+
+    await execute_task_background(
+        task_id=13,
+        user_message="hi",
+        context={},
+        agent_manager=AgentManager(),
+        user_id=int(user.id),
+        llm_user_message="hi",
+    )
+
+    db_session.expire_all()
+    task = db_session.query(Task).filter(Task.id == 13).first()
+    assert task.status == TaskStatus.COMPLETED
+    assert payload_calls == []
+
+
 def test_build_uploaded_files_context_includes_agent_builder_kb_instruction():
     context = _build_uploaded_files_context(
         [
