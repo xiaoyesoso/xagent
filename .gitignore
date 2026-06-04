@@ -233,6 +233,8 @@ examples/*.html
 # But keep skills markdown files and test markdown files
 !src/xagent/skills/**/*.md
 !tests/resources/test_files/*.md
+# And SDK documentation under sdks/<lang>/
+!sdks/**/*.md
 
 .DS_Store
 uploads/
