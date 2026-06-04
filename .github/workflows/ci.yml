@@ -206,6 +206,57 @@ jobs:
           set -e
           python3 -m uv run python -m pytest tests/e2e --run-special -q
 
+  sdk-python:
+    runs-on: ubuntu-latest
+    needs: pre-commit
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Ensure uv is available
+        shell: bash
+        run: |
+          set -e
+          if ! command -v uv >/dev/null 2>&1; then
+            echo "uv not found, installing..."
+            python3 -m pip install --user uv
+            echo "$HOME/.local/bin" >> $GITHUB_PATH
+          fi
+          python3 -m uv --version || uv --version
+
+      - name: Create virtual environment
+        shell: bash
+        run: |
+          set -e
+          _UV="python3 -m uv"
+          $_UV --version
+          $_UV venv --python 3.12
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          set -e
+          python3 -m uv sync
+
+      - name: Install SDK (editable)
+        shell: bash
+        run: |
+          set -e
+          python3 -m uv pip install -e ./sdks/python
+
+      - name: Run SDK tests
+        shell: bash
+        # cd into the SDK package so pytest discovers sdks/python/pyproject.toml
+        # (testpaths=tests, no asyncio_mode) rather than the repo-root config
+        # which is tuned for the main test suite. Use ../../.venv directly --
+        # `uv run` would walk upward and re-resolve against the root project.
+        working-directory: ./sdks/python
+        run: |
+          set -e
+          ../../.venv/bin/python -m pytest -v
+
   frontend-build:
     runs-on: ubuntu-latest
     needs: pre-commit
