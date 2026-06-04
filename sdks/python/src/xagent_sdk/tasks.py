@@ -198,13 +198,22 @@ class AsyncTasksAPI:
         poll_interval: float = DEFAULT_POLL_INTERVAL,
         timeout: Optional[float] = DEFAULT_POLL_TIMEOUT,
     ) -> TaskInfo:
-        """Async version of :meth:`TasksAPI.wait_for_completion`."""
-        deadline = None if timeout is None else asyncio.get_event_loop().time() + timeout
+        """Async version of :meth:`TasksAPI.wait_for_completion`.
+
+        Uses :func:`time.monotonic` for the deadline (not
+        ``asyncio.get_event_loop().time()``) so the timeout doesn't
+        depend on which event loop is running and doesn't emit the
+        Python 3.12 ``DeprecationWarning`` that ``get_event_loop()``
+        triggers when there's no current loop. ``asyncio.sleep`` still
+        yields back to the loop, so cooperative scheduling is
+        unaffected.
+        """
+        deadline = None if timeout is None else time.monotonic() + timeout
         info: Optional[TaskInfo] = None
         while True:
             info = await self.get(task_id)
             if info.is_terminal:
                 return info
-            if deadline is not None and asyncio.get_event_loop().time() >= deadline:
+            if deadline is not None and time.monotonic() >= deadline:
                 raise TaskTimeoutError(task_id, info)
             await asyncio.sleep(poll_interval)

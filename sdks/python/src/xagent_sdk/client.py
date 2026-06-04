@@ -18,6 +18,7 @@ import httpx
 
 from ._http import DEFAULT_TIMEOUT_SECONDS, _AsyncTransport, _SyncTransport
 from .agents import AgentsAPI, AsyncAgentsAPI
+from .models import Me
 from .tasks import AsyncTasksAPI, TasksAPI
 
 
@@ -57,7 +58,7 @@ class XagentClient:
         self.agents = AgentsAPI(self._transport)
         self.tasks = TasksAPI(self._transport)
 
-    def me(self) -> "object":
+    def me(self) -> Me:
         """Shortcut for :meth:`AgentsAPI.me`."""
         return self.agents.me()
 
@@ -102,7 +103,8 @@ class AsyncXagentClient:
         self.agents = AsyncAgentsAPI(self._transport)
         self.tasks = AsyncTasksAPI(self._transport)
 
-    async def me(self) -> "object":
+    async def me(self) -> Me:
+        """Shortcut for :meth:`AsyncAgentsAPI.me`."""
         return await self.agents.me()
 
     async def aclose(self) -> None:

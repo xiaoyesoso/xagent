@@ -10,6 +10,13 @@ wrap ``httpx.Client`` / ``httpx.AsyncClient`` respectively. They both
 return parsed JSON for 2xx responses and raise the appropriate
 :class:`XagentApiError` subclass for non-2xx, so the public client
 modules can stay focused on shaping requests and parsing models.
+
+URL composition: the transport stores its own normalised ``base_url``
+and joins request paths against it explicitly, **not** via
+``httpx.Client(base_url=...)``. That way the caller can inject a
+pre-configured ``httpx.Client`` with an unrelated ``base_url`` (e.g.
+pointing at a proxy or pinned to a different host) and we still send
+the request to the right endpoint on the Xagent server.
 """
 
 from __future__ import annotations
@@ -57,6 +64,20 @@ def _handle(response: httpx.Response) -> Any:
     raise XagentError("unreachable")
 
 
+def _join(base_url: str, path: str) -> str:
+    """Compose an absolute URL from the SDK ``base_url`` and a path.
+
+    ``base_url`` is the value the caller passed into ``XagentClient``,
+    normalised once at transport construction (no trailing slash).
+    ``path`` is the route the SDK code writes (always starts with
+    ``/``). We concatenate explicitly instead of relying on
+    ``httpx.Client(base_url=...)`` so callers that inject their own
+    ``httpx_client`` with a different ``base_url`` (proxy, sidecar,
+    test transport, …) still see requests land on the Xagent server.
+    """
+    return f"{base_url}{path}"
+
+
 class _SyncTransport:
     """Thin wrapper around ``httpx.Client``.
 
@@ -74,11 +95,9 @@ class _SyncTransport:
         httpx_client: Optional[httpx.Client] = None,
     ) -> None:
         self._api_key = api_key
+        self._base_url = base_url.rstrip("/")
         self._owns_client = httpx_client is None
-        self._client = httpx_client or httpx.Client(
-            base_url=base_url.rstrip("/"),
-            timeout=timeout,
-        )
+        self._client = httpx_client or httpx.Client(timeout=timeout)
 
     def request(
         self,
@@ -90,7 +109,7 @@ class _SyncTransport:
     ) -> Any:
         response = self._client.request(
             method,
-            path,
+            _join(self._base_url, path),
             json=json,
             params=params,
             headers=_build_headers(self._api_key),
@@ -114,11 +133,9 @@ class _AsyncTransport:
         httpx_client: Optional[httpx.AsyncClient] = None,
     ) -> None:
         self._api_key = api_key
+        self._base_url = base_url.rstrip("/")
         self._owns_client = httpx_client is None
-        self._client = httpx_client or httpx.AsyncClient(
-            base_url=base_url.rstrip("/"),
-            timeout=timeout,
-        )
+        self._client = httpx_client or httpx.AsyncClient(timeout=timeout)
 
     async def request(
         self,
@@ -130,7 +147,7 @@ class _AsyncTransport:
     ) -> Any:
         response = await self._client.request(
             method,
-            path,
+            _join(self._base_url, path),
             json=json,
             params=params,
             headers=_build_headers(self._api_key),
