@@ -2043,6 +2043,7 @@ Build when you need.`,
         publish: "Publish",
         delete: "Delete",
         edit: "Edit",
+        apiKey: "API Key",
         deleteConfirm: "Are you sure you want to delete this agent?",
       },
       createModal: {
@@ -3019,7 +3020,45 @@ Build when you need.`,
     messages: {
       update_success: "Widget configuration updated",
       update_failed: "Failed to update widget configuration",
-      copied: "Copied to clipboard"
+      copied: "Copied to clipboard",
+      copy_failed: "Failed to copy to clipboard"
+    },
+    api_panel: {
+      title: "Call this agent via REST API",
+      desc: "Submit a task to the agent, then poll GET /v1/chat/tasks/{id} for the result.",
+      copy_btn: "Copy",
+      key_hint: "Replace YOUR_API_KEY with this agent's API key.",
+      manage_key: "Manage API Key"
+    }
+  },
+  api_key: {
+    title: "API Key",
+    subtitle: "SDK / REST API credential",
+    empty: "No API key yet. Generate one to call this agent via the SDK or REST API.",
+    active_key: "Active key",
+    created_at: "Created",
+    reveal: {
+      warning: "Copy this key now — it is shown only once.",
+      copy: "Copy"
+    },
+    actions: {
+      generate: "Generate API Key",
+      regenerate: "Regenerate",
+      revoke: "Revoke",
+      cancel: "Cancel"
+    },
+    confirm: {
+      regenerate: "Regenerating immediately invalidates the current key. Any app using it will stop working until updated.",
+      revoke: "Revoking invalidates the current key. Any app using it will stop working."
+    },
+    messages: {
+      load_failed: "Failed to load API key",
+      generated: "API key generated",
+      generate_failed: "Failed to generate API key",
+      revoked: "API key revoked",
+      revoke_failed: "Failed to revoke API key",
+      copied: "Copied to clipboard",
+      copy_failed: "Failed to copy to clipboard"
     }
   },
   workforces: {
