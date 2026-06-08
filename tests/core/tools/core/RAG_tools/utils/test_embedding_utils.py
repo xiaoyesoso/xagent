@@ -42,10 +42,26 @@ class TestNormalizeRawEmbeddingToVectors:
         assert got == [[1.0, 2.0]]
 
     def test_non_list_raises(self) -> None:
+        # An API-error dict (no "data" key) should still surface as a
+        # VectorValidationError with response_type=dict so callers can
+        # see why the provider rejected the request.
         with pytest.raises(VectorValidationError) as exc_info:
-            normalize_raw_embedding_to_vectors({"data": []})
+            normalize_raw_embedding_to_vectors({"code": "X", "message": "y"})
         assert "list" in exc_info.value.message
         assert exc_info.value.details.get("response_type") == "dict"
+
+    def test_openai_response_dict_with_data_is_unwrapped(self) -> None:
+        # Provider returned the raw OpenAI-compatible response envelope
+        # ({"object": "list", "data": [...]}) instead of just data; the
+        # helper should transparently unwrap the "data" key.
+        raw = {
+            "object": "list",
+            "data": [
+                {"index": 0, "object": "embedding", "embedding": [0.1, 0.2]}
+            ],
+            "model": "text-embedding-3-small",
+        }
+        assert normalize_raw_embedding_to_vectors(raw) == [[0.1, 0.2]]
 
     def test_list_of_dict_missing_embedding_key_raises(self) -> None:
         with pytest.raises(VectorValidationError) as exc_info:

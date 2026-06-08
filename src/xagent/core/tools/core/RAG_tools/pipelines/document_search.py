@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import numbers
 import os
 from typing import (
     TYPE_CHECKING,
@@ -15,7 +14,6 @@ from typing import (
     Sequence,
     Tuple,
     Union,
-    cast,
 )
 
 import requests
@@ -42,6 +40,7 @@ from ..retrieval.search_dense import search_dense
 from ..retrieval.search_hybrid import _rrf_fusion, search_hybrid
 from ..retrieval.search_sparse import search_sparse
 from ..utils.config_utils import coerce_search_config
+from ..utils.embedding_utils import normalize_single_embedding
 from ..utils.model_resolver import resolve_embedding_adapter, resolve_rerank_adapter
 from ..utils.user_scope import resolve_user_scope
 
@@ -134,8 +133,15 @@ def _resolve_dashscope_rerank(
 def _encode_query_vector(adapter: BaseEmbedding, query_text: str) -> List[float]:
     """Encode query text into a single vector using embedding adapter.
 
+    Provider responses come in many shapes (``List[float]``, ``List[List[float]]``,
+    ``List[dict]`` with an ``"embedding"`` key, or even non-list types such as
+    ``numpy.ndarray``). Delegate to ``normalize_single_embedding`` so the
+    search path behaves consistently with the ingestion path, which already
+    uses the same helper.
+
     Raises:
-        VectorValidationError: If encoding fails or returns invalid data.
+        VectorValidationError: If encoding fails or the provider response
+            cannot be normalized to a single numeric vector.
     """
     try:
         raw_vector = adapter.encode(query_text)
@@ -144,27 +150,7 @@ def _encode_query_vector(adapter: BaseEmbedding, query_text: str) -> List[float]
             f"Embedding adapter failed to encode query: {exc}"
         ) from exc
 
-    if not isinstance(raw_vector, list):
-        raise VectorValidationError("Embedding provider returned invalid response type")
-
-    if not raw_vector:
-        raise VectorValidationError("Embedding provider returned empty vector")
-
-    first_item = raw_vector[0]
-    if isinstance(first_item, list):
-        # Treat as batch response
-        if len(raw_vector) != 1:
-            raise VectorValidationError(
-                "Embedding provider returned multiple vectors for single query"
-            )
-        vector = cast(List[float], first_item)
-    else:
-        vector = cast(List[float], raw_vector)
-
-    if not all(isinstance(value, numbers.Number) for value in vector):
-        raise VectorValidationError("Embedding vector contains non-numeric values")
-
-    return [float(value) for value in vector]
+    return normalize_single_embedding(raw_vector)
 
 
 def _serialize_warnings(warnings: Sequence) -> List[str]:

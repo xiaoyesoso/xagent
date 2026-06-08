@@ -37,12 +37,54 @@ def normalize_raw_embedding_to_vectors(raw: Any) -> List[List[float]]:
             for debugging.
     """
     if not isinstance(raw, list):
-        raise VectorValidationError(
-            "Embedding response must be a list",
-            details={
-                "response_type": type(raw).__name__,
-            },
-        )
+        # Provider returned the raw OpenAI-compatible response dict (e.g.
+        # {"object": "list", "data": [...], "model": "..."}). Extract the
+        # list of embeddings from the "data" key.
+        if isinstance(raw, dict):
+            data = raw.get("data")
+            if isinstance(data, list):
+                raw = data
+            elif isinstance(raw.get("embedding"), list):
+                # Provider returned a single embedding item without the
+                # outer list wrapper, e.g.
+                # {"index": 0, "object": "embedding", "embedding": [...]}.
+                raw = [raw]
+            else:
+                # Likely an API error response (code / message).
+                msg = raw.get("message")
+                raise VectorValidationError(
+                    "Embedding response must be a list",
+                    details={
+                        "response_type": "dict",
+                        "dict_keys": list(raw.keys()),
+                        "error_code": raw.get("code"),
+                        "error_message": msg[:120] if isinstance(msg, str) else msg,
+                    },
+                )
+        else:
+            # Some providers (e.g. local Xinference, sentence-transformers
+            # wrappers) return numpy.ndarray. Convert via .tolist() so
+            # downstream sees the standard list shape.
+            tolist = getattr(raw, "tolist", None)
+            if callable(tolist):
+                converted = tolist()
+                if isinstance(converted, list):
+                    raw = converted
+                else:
+                    raise VectorValidationError(
+                        "Embedding response must be a list",
+                        details={
+                            "response_type": type(raw).__name__,
+                            "tolist_result_type": type(converted).__name__,
+                        },
+                    )
+            else:
+                raise VectorValidationError(
+                    "Embedding response must be a list",
+                    details={
+                        "response_type": type(raw).__name__,
+                    },
+                )
 
     if not raw:
         return []
