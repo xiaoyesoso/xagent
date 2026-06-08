@@ -100,6 +100,12 @@ class TestNormalizeSingleEmbedding:
         got = normalize_single_embedding([raw])
         assert got == [0.1, -0.046]
 
+    def test_numpy_scalar_list(self) -> None:
+        np = pytest.importorskip("numpy")
+        raw = [np.float32(0.3), np.float32(-0.7)]
+        got = normalize_single_embedding(raw)
+        assert got == pytest.approx([0.3, -0.7])
+
     def test_empty_list_raises(self) -> None:
         with pytest.raises(VectorValidationError) as exc_info:
             normalize_single_embedding([])

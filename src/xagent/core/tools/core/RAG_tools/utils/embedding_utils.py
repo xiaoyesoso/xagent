@@ -8,6 +8,7 @@ when provider returns list of dicts with 'embedding' key).
 
 from __future__ import annotations
 
+import numbers
 from typing import Any, List
 
 from ..core.exceptions import VectorValidationError
@@ -98,9 +99,9 @@ def normalize_raw_embedding_to_vectors(raw: Any) -> List[List[float]]:
 
     first = raw[0]
 
-    # Single vector: List[float]
-    if isinstance(first, (int, float)):
-        if not all(isinstance(x, (int, float)) for x in raw):
+    # Single vector: List[float] (or List[numeric] — numpy scalars etc.)
+    if isinstance(first, numbers.Number):
+        if not all(isinstance(x, numbers.Number) for x in raw):
             raise VectorValidationError(
                 "Embedding response is a list but not all elements are numbers",
                 details={
