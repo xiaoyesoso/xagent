@@ -10,6 +10,7 @@ import { Button } from "@/components/ui/button"
 import {
   Sheet,
   SheetContent,
+  SheetTitle,
   SheetTrigger,
 } from "@/components/ui/sheet"
 
@@ -42,6 +43,7 @@ export function MobileHeader() {
           </Button>
         </SheetTrigger>
         <SheetContent side="left" className="w-[85vw] max-w-sm p-0">
+          <SheetTitle className="sr-only">Navigation menu</SheetTitle>
           <Sidebar className="w-full border-r-0" allowCollapse={false} />
         </SheetContent>
       </Sheet>

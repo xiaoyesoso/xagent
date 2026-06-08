@@ -6,7 +6,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Menu } from "lucide-react";
 import { Sidebar } from "@/components/layout/sidebar";
 import { Button } from "@/components/ui/button";
-import { Sheet, SheetContent, SheetTrigger } from "@/components/ui/sheet";
+import { Sheet, SheetContent, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
 import { useI18n } from "@/contexts/i18n-context";
 import { getBrandingFromEnv } from "@/lib/branding";
 
@@ -87,6 +87,7 @@ export function AppHeader() {
             </Button>
           </SheetTrigger>
           <SheetContent side="left" className="w-[85vw] max-w-sm p-0">
+            <SheetTitle className="sr-only">Navigation menu</SheetTitle>
             <Sidebar className="w-full border-r-0" allowCollapse={false} />
           </SheetContent>
         </Sheet>
