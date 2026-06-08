@@ -8,6 +8,7 @@ when provider returns list of dicts with 'embedding' key).
 
 from __future__ import annotations
 
+import numbers
 from typing import Any, List
 
 from ..core.exceptions import VectorValidationError
@@ -37,21 +38,70 @@ def normalize_raw_embedding_to_vectors(raw: Any) -> List[List[float]]:
             for debugging.
     """
     if not isinstance(raw, list):
-        raise VectorValidationError(
-            "Embedding response must be a list",
-            details={
-                "response_type": type(raw).__name__,
-            },
-        )
+        # Provider returned the raw OpenAI-compatible response dict (e.g.
+        # {"object": "list", "data": [...], "model": "..."}). Extract the
+        # list of embeddings from the "data" key.
+        if isinstance(raw, dict):
+            data = raw.get("data")
+            if isinstance(data, list):
+                raw = data
+            elif isinstance(raw.get("embedding"), list):
+                # Provider returned a single embedding item without the
+                # outer list wrapper, e.g.
+                # {"index": 0, "object": "embedding", "embedding": [...]}.
+                raw = [raw]
+            else:
+                # Likely an API error response. OpenAI-compatible providers
+                # often wrap errors in an outer "error" dict: {"error": {...}}.
+                nested_error = raw.get("error")
+                if isinstance(nested_error, dict):
+                    error_data = nested_error
+                else:
+                    error_data = raw
+                msg = error_data.get("message") or raw.get("message")
+                code = error_data.get("code") or raw.get("code")
+                raise VectorValidationError(
+                    "Embedding response must be a list",
+                    details={
+                        "response_type": "dict",
+                        "dict_keys": list(raw.keys()),
+                        "error_code": code,
+                        "error_message": msg[:120] if isinstance(msg, str) else msg,
+                    },
+                )
+        else:
+            # Some providers (e.g. local Xinference, sentence-transformers
+            # wrappers) return numpy.ndarray. Convert via .tolist() so
+            # downstream sees the standard list shape.
+            tolist = getattr(raw, "tolist", None)
+            if callable(tolist):
+                converted = tolist()
+                if isinstance(converted, list):
+                    raw = converted
+                else:
+                    raise VectorValidationError(
+                        "Embedding response must be a list",
+                        details={
+                            "response_type": type(raw).__name__,
+                            "tolist_result_type": type(converted).__name__,
+                        },
+                    )
+            else:
+                raise VectorValidationError(
+                    "Embedding response must be a list",
+                    details={
+                        "response_type": type(raw).__name__,
+                    },
+                )
 
     if not raw:
         return []
 
     first = raw[0]
 
-    # Single vector: List[float]
-    if isinstance(first, (int, float)):
-        if not all(isinstance(x, (int, float)) for x in raw):
+    # Single vector: List[float] (or List[numeric] — numpy scalars etc.)
+    if isinstance(first, numbers.Number):
+        if not all(isinstance(x, numbers.Number) for x in raw):
             raise VectorValidationError(
                 "Embedding response is a list but not all elements are numbers",
                 details={
