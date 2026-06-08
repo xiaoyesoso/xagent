@@ -69,9 +69,7 @@ class TestNormalizeRawEmbeddingToVectors:
         # helper should transparently unwrap the "data" key.
         raw = {
             "object": "list",
-            "data": [
-                {"index": 0, "object": "embedding", "embedding": [0.1, 0.2]}
-            ],
+            "data": [{"index": 0, "object": "embedding", "embedding": [0.1, 0.2]}],
             "model": "text-embedding-3-small",
         }
         assert normalize_raw_embedding_to_vectors(raw) == [[0.1, 0.2]]

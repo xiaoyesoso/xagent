@@ -52,7 +52,11 @@ def normalize_raw_embedding_to_vectors(raw: Any) -> List[List[float]]:
             else:
                 # Likely an API error response. OpenAI-compatible providers
                 # often wrap errors in an outer "error" dict: {"error": {...}}.
-                error_data = raw.get("error") if isinstance(raw.get("error"), dict) else raw
+                nested_error = raw.get("error")
+                if isinstance(nested_error, dict):
+                    error_data = nested_error
+                else:
+                    error_data = raw
                 msg = error_data.get("message") or raw.get("message")
                 code = error_data.get("code") or raw.get("code")
                 raise VectorValidationError(
