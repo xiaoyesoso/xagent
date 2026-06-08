@@ -83,11 +83,11 @@ export function AppHeader() {
           <SheetTrigger asChild>
             <Button variant="ghost" size="icon" className="xl:hidden">
               <Menu className="h-5 w-5" />
-              <span className="sr-only">Open navigation</span>
+              <span className="sr-only">{t("nav.openMenu")}</span>
             </Button>
           </SheetTrigger>
           <SheetContent side="left" className="w-[85vw] max-w-sm p-0">
-            <SheetTitle className="sr-only">Navigation menu</SheetTitle>
+            <SheetTitle className="sr-only">{t("nav.menu")}</SheetTitle>
             <Sidebar className="w-full border-r-0" allowCollapse={false} />
           </SheetContent>
         </Sheet>
