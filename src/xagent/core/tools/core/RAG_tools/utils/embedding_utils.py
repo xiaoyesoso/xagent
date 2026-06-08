@@ -50,14 +50,17 @@ def normalize_raw_embedding_to_vectors(raw: Any) -> List[List[float]]:
                 # {"index": 0, "object": "embedding", "embedding": [...]}.
                 raw = [raw]
             else:
-                # Likely an API error response (code / message).
-                msg = raw.get("message")
+                # Likely an API error response. OpenAI-compatible providers
+                # often wrap errors in an outer "error" dict: {"error": {...}}.
+                error_data = raw.get("error") if isinstance(raw.get("error"), dict) else raw
+                msg = error_data.get("message") or raw.get("message")
+                code = error_data.get("code") or raw.get("code")
                 raise VectorValidationError(
                     "Embedding response must be a list",
                     details={
                         "response_type": "dict",
                         "dict_keys": list(raw.keys()),
-                        "error_code": raw.get("code"),
+                        "error_code": code,
                         "error_message": msg[:120] if isinstance(msg, str) else msg,
                     },
                 )

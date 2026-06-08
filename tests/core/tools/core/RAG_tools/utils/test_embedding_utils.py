@@ -49,6 +49,19 @@ class TestNormalizeRawEmbeddingToVectors:
             normalize_raw_embedding_to_vectors({"code": "X", "message": "y"})
         assert "list" in exc_info.value.message
         assert exc_info.value.details.get("response_type") == "dict"
+        assert exc_info.value.details.get("error_code") == "X"
+        assert exc_info.value.details.get("error_message") == "y"
+
+    def test_nested_openai_error_dict_is_unwrapped(self) -> None:
+        # OpenAI-compatible providers wrap errors inside an "error" object:
+        # {"error": {"code": "...", "message": "..."}}. The helper should
+        # surface those fields in details instead of swallowing them.
+        with pytest.raises(VectorValidationError) as exc_info:
+            normalize_raw_embedding_to_vectors(
+                {"error": {"code": "invalid_key", "message": "Unauthorized"}}
+            )
+        assert exc_info.value.details.get("error_code") == "invalid_key"
+        assert exc_info.value.details.get("error_message") == "Unauthorized"
 
     def test_openai_response_dict_with_data_is_unwrapped(self) -> None:
         # Provider returned the raw OpenAI-compatible response envelope
