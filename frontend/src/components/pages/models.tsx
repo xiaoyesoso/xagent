@@ -436,7 +436,9 @@ export function ModelsPage() {
 
             <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6">
               {Object.entries(enabledProviders).map(([providerId, providerModels]) => {
-                const providerConfig = providers.find(p => p.id === providerId) || {
+                const knownConfig = providers.find(p => p.id === providerId)
+                const hasKnownProvider = knownConfig !== undefined
+                const providerConfig = knownConfig || {
                   id: providerId,
                   name: providerId.charAt(0).toUpperCase() + providerId.slice(1),
                   description: "",
@@ -445,6 +447,12 @@ export function ModelsPage() {
                   defaultBaseUrl: "",
                   models: [],
                 }
+                // Surface a real model label for the unknown-provider fallback
+                // so a stale or unrecognized provider id does not render
+                // as a bare "None" card.
+                const fallbackName = providerModels[0]?.model_name
+                  ? providerModels[0].model_name
+                  : providerConfig.name
 
                 // Gather unique abilities across all models in this provider
                 const allAbilities = new Set<string>()
@@ -488,7 +496,7 @@ export function ModelsPage() {
                           <div className="p-2 bg-muted rounded-lg shrink-0">
                             {providerConfig.icon}
                           </div>
-                          <h3 className="font-semibold text-lg">{providerConfig.name}</h3>
+                          <h3 className="font-semibold text-lg">{hasKnownProvider ? providerConfig.name : fallbackName}</h3>
                         </div>
                       </div>
 
