@@ -584,13 +584,23 @@ async def test_model_connection(
 
         elif request.category == "rerank":
             from xagent.core.model.rerank.adapter import _create_rerank_model
+            from xagent.core.model.rerank.dashscope import _default_url_for
+
+            # The DashScope rerank endpoint differs between model families
+            # (qwen3-rerank uses the OpenAI-compatible URL, gte-rerank-v2
+            # uses the legacy WebAPI). Derive the URL from the model name
+            # so a stale ``base_url`` from the form cannot break the
+            # connectivity probe.
+            rerank_base_url = base_url
+            if provider == "dashscope":
+                rerank_base_url = _default_url_for(request.model_name)
 
             rerank_config = RerankModelConfig(
                 id="test-model",
                 model_provider=provider,
                 model_name=request.model_name,
                 api_key=request.api_key,
-                base_url=base_url,
+                base_url=rerank_base_url,
                 top_n=request.top_n,
                 instruct=request.instruct,
             )
