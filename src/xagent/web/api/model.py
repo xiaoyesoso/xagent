@@ -226,6 +226,7 @@ def _is_default_config_type_compatible(model: Any, config_type: str) -> bool:
         "asr": "speech",
         "tts": "speech",
         "speech": "speech",
+        "rerank": "rerank",
     }
 
     expected_category = category_by_config_type.get(config_type)
