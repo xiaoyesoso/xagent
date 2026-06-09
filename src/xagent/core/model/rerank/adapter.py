@@ -16,6 +16,33 @@ def retry_on(e: Exception) -> bool:
     return isinstance(e, ERRORS)
 
 
+def _create_rerank_model(model_config: RerankModelConfig) -> BaseRerank:
+    """Create the underlying rerank model based on ``model_provider``."""
+    provider = (model_config.model_provider or "dashscope").lower()
+
+    if provider == "xinference":
+        from .xinference import XinferenceRerank
+
+        return XinferenceRerank(
+            model=model_config.model_name,
+            api_key=model_config.api_key,
+            base_url=model_config.base_url,
+            top_n=model_config.top_n,
+            timeout=model_config.timeout,
+        )
+
+    # Default: DashScope-compatible rerank endpoint
+    from .dashscope import DashscopeRerank
+
+    return DashscopeRerank(
+        model=model_config.model_name,
+        api_key=model_config.api_key,
+        base_url=model_config.base_url,
+        top_n=model_config.top_n,
+        instruct=model_config.instruct,
+    )
+
+
 def create_rerank_adapter(model_config: RerankModelConfig) -> BaseRerank:
     """
     Creates a custom BaseRerank instance from a RerankModelConfig with retry logic.
@@ -34,19 +61,7 @@ class RerankModelAdapter(BaseRerank):
 
     def __init__(self, model_config: RerankModelConfig):
         self.model_config = model_config
-        self._rerank_model = self._create_rerank_model()
-
-    def _create_rerank_model(self) -> BaseRerank:
-        """Create the actual rerank model from configuration."""
-        from .dashscope import DashscopeRerank
-
-        return DashscopeRerank(
-            model=self.model_config.model_name,
-            api_key=self.model_config.api_key,
-            base_url=self.model_config.base_url,
-            top_n=self.model_config.top_n,
-            instruct=self.model_config.instruct,
-        )
+        self._rerank_model = _create_rerank_model(model_config)
 
     def compress(
         self,

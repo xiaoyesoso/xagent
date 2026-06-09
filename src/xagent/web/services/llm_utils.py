@@ -54,6 +54,8 @@ def _create_llm_instance(db_model: Model) -> BaseLLM:
         config = RerankModelConfig(
             id=db_model.model_id,
             model_name=db_model.model_name,
+            model_provider=getattr(db_model, "model_provider", "dashscope")
+            or "dashscope",
             api_key=db_model.api_key,
             base_url=db_model.base_url,
             abilities=db_model.abilities,

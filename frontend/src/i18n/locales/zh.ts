@@ -1414,6 +1414,7 @@ Build when you need.`,
     tabs: {
       llm: "LLM 模型",
       embedding: "Embedding 模型",
+      rerank: "重排序模型",
       image: "图像生成模型",
       speech: "语音模型",
     },

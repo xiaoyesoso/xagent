@@ -114,6 +114,27 @@ async def fetch_xinference_models(
     return await XinferenceLLM.list_available_models(base_url=base_url, api_key=api_key)
 
 
+async def fetch_xinference_rerank_models(
+    api_key: str, base_url: Optional[str] = None
+) -> List[Dict[str, Any]]:
+    """Fetch available rerank models from a Xinference server.
+
+    Args:
+        api_key: Xinference API key (optional)
+        base_url: Xinference server base URL (required)
+
+    Returns:
+        List of available rerank models on the server, shaped as
+        ``{"id", "model_uid", ...}`` (see ``XinferenceRerank.list_available_models``).
+    """
+    if not base_url:
+        raise ValueError("base_url is required for Xinference rerank")
+
+    from ...core.model.rerank.xinference import XinferenceRerank
+
+    return XinferenceRerank.list_available_models(base_url=base_url, api_key=api_key)
+
+
 async def fetch_alibaba_coding_plan_models(
     api_key: str, base_url: Optional[str] = None
 ) -> List[Dict[str, Any]]:
@@ -176,6 +197,7 @@ PROVIDER_FETCHERS: Dict[str, Any] = {
     "gemini": fetch_gemini_models,
     "google": fetch_gemini_models,
     "xinference": fetch_xinference_models,
+    "xinference-rerank": fetch_xinference_rerank_models,
     "zai-coding-plan": fetch_openai_models,
     "zhipuai-coding-plan": fetch_openai_models,
     "alibaba-coding-plan": fetch_alibaba_coding_plan_models,

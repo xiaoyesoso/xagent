@@ -97,6 +97,7 @@ export function ModelManagementDialog({
     if (category === 'embedding') return ['embedding']
     if (category === 'image') return ['generate']
     if (category === 'speech') return ['asr']
+    if (category === 'rerank') return ['rerank']
     return []
   }
 
@@ -615,7 +616,8 @@ export function ModelManagementDialog({
                             { value: "llm", label: t('models.tabs.llm') },
                             { value: "embedding", label: t('models.tabs.embedding') },
                             { value: "image", label: t('models.tabs.image') },
-                            { value: "speech", label: t('models.tabs.speech') }
+                            { value: "speech", label: t('models.tabs.speech') },
+                            { value: "rerank", label: t('models.tabs.rerank') }
                           ]}
                           className="w-full sm:w-[180px]"
                         />
@@ -1145,7 +1147,8 @@ export function ModelManagementDialog({
                       { value: "llm", label: t('models.tabs.llm') },
                       { value: "embedding", label: t('models.tabs.embedding') },
                       { value: "image", label: t('models.tabs.image') },
-                      { value: "speech", label: t('models.tabs.speech') }
+                      { value: "speech", label: t('models.tabs.speech') },
+                      { value: "rerank", label: t('models.tabs.rerank') }
                     ]}
                   />
                 </div>

@@ -1414,6 +1414,7 @@ Build when you need.`,
     tabs: {
       llm: "LLM Models",
       embedding: "Embedding Models",
+      rerank: "Rerank Models",
       image: "Image Generation Models",
       speech: "Speech Models",
     },
