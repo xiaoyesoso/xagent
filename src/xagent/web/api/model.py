@@ -341,6 +341,27 @@ async def create_model(
             format=model.format,
             sample_rate=model.sample_rate,
         )
+    elif model.category == "rerank":
+        # DashScope rerank has model-family-specific endpoints; let the
+        # adapter derive the correct URL when the form leaves it blank.
+        from xagent.core.model.rerank.dashscope import _default_url_for
+
+        rerank_base_url = base_url
+        if model_provider == "dashscope" and model.model_name:
+            rerank_base_url = _default_url_for(model.model_name)
+
+        config = RerankModelConfig(
+            id=model.model_id,
+            model_name=model.model_name,
+            model_provider=model_provider,
+            base_url=rerank_base_url,
+            api_key=model.api_key or "",
+            timeout=180.0,
+            abilities=model.abilities,
+            description=model.description,
+            top_n=model.top_n,
+            instruct=model.instruct,
+        )
     else:
         raise HTTPException(status_code=400, detail="Invalid model category")
 

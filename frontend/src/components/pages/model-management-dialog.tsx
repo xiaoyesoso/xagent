@@ -126,6 +126,9 @@ export function ModelManagementDialog({
       ...(category === 'speech' ? [
         ...(abilities?.includes('asr') ? [{ value: "asr", label: t('models.defaults.asr') }] : []),
         ...(abilities?.includes('tts') ? [{ value: "tts", label: t('models.defaults.tts') }] : [])
+      ] : []),
+      ...(category === 'rerank' ? [
+        { value: "rerank", label: t('models.defaults.rerank') }
       ] : [])
     ]
   }
@@ -212,11 +215,16 @@ export function ModelManagementDialog({
     { value: "tts", label: t('models.abilities.tts') }
   ], [t])
 
+  const rerankAbilityOptions = useMemo(() => [
+    { value: "rerank", label: t('models.abilities.rerank') }
+  ], [t])
+
   const getAbilityOptionsForCategory = (category: string) => {
     if (category === 'llm') return abilityOptions
     if (category === 'embedding') return embeddingAbilityOptions
     if (category === 'image') return imageAbilityOptions
     if (category === 'speech') return speechAbilityOptions
+    if (category === 'rerank') return rerankAbilityOptions
     return []
   }
 
@@ -868,7 +876,7 @@ export function ModelManagementDialog({
                             // Initialize default logic based on whether they have one
                             // only do this once per session so we don't overwrite if they remove it
                             if (!hasInitializedDefaults) {
-                              const targetType = formData.category === 'llm' ? 'general' : formData.category === 'embedding' ? 'embedding' : formData.category === 'image' ? 'image' : formData.category === 'speech' ? 'asr' : null;
+                              const targetType = formData.category === 'llm' ? 'general' : formData.category === 'embedding' ? 'embedding' : formData.category === 'image' ? 'image' : formData.category === 'speech' ? 'asr' : formData.category === 'rerank' ? 'rerank' : null;
                               if (targetType) {
                                 const hasDefault = (defaultModels as any)[targetType];
                                 if (!hasDefault) {
@@ -919,6 +927,9 @@ export function ModelManagementDialog({
                             ...(formData.category === 'speech' ? [
                               ...(formData.abilities?.includes('asr') ? [{ value: "asr", label: t('models.defaults.asr') }] : []),
                               ...(formData.abilities?.includes('tts') ? [{ value: "tts", label: t('models.defaults.tts') }] : [])
+                            ] : []),
+                            ...(formData.category === 'rerank' ? [
+                              { value: "rerank", label: t('models.defaults.rerank') }
                             ] : [])
                           ]}
                           placeholder={t('models.form.defaultPlaceholder')}
@@ -930,6 +941,7 @@ export function ModelManagementDialog({
                             if (formData.category === 'embedding') return ['embedding'];
                             if (formData.category === 'image') return ['image', 'image_edit'];
                             if (formData.category === 'speech') return ['asr', 'tts'];
+                            if (formData.category === 'rerank') return ['rerank'];
                             return [];
                           })();
 

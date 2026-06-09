@@ -109,7 +109,7 @@ class SQLAlchemyModelHub:
         elif isinstance(model, RerankModelConfig):
             db_data.update(
                 {
-                    "model_provider": "none",
+                    "model_provider": model.model_provider,
                     "category": "rerank",
                 }
             )
@@ -180,7 +180,10 @@ class SQLAlchemyModelHub:
                 model_provider=db_model.model_provider,
             )
         elif db_model.category == "rerank":
-            return RerankModelConfig(**common)
+            return RerankModelConfig(
+                **common,
+                model_provider=db_model.model_provider,
+            )
         elif db_model.category == "vector_db":
             return self._load_vector_db_config(db_model, common)
         else:
@@ -225,7 +228,10 @@ class SQLAlchemyModelHub:
                     dimension=db_model.dimension,
                 )
             elif db_model.category == "rerank":
-                config = RerankModelConfig(**common_fields)
+                config = RerankModelConfig(
+                    **common_fields,
+                    model_provider=db_model.model_provider,
+                )
             elif db_model.category == "vector_db":
                 config = self._load_vector_db_config(db_model, common_fields)
             else:
