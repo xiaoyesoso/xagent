@@ -15,6 +15,7 @@ from xagent.core.model.model import (
     EmbeddingModelConfig,
     ImageModelConfig,
     ModelConfig,
+    RerankModelConfig,
 )
 from xagent.core.model.providers import (
     canonical_provider_name,
@@ -580,6 +581,33 @@ async def test_model_connection(
                 )
             finally:
                 await probe_model.aclose()
+
+        elif request.category == "rerank":
+            from xagent.core.model.rerank.adapter import _create_rerank_model
+
+            rerank_config = RerankModelConfig(
+                id="test-model",
+                model_provider=provider,
+                model_name=request.model_name,
+                api_key=request.api_key,
+                base_url=base_url,
+                top_n=request.top_n,
+                instruct=request.instruct,
+            )
+            rerank_model = _create_rerank_model(rerank_config)
+
+            def _probe_rerank() -> list:
+                return list(
+                    rerank_model.compress(
+                        documents=["hello", "world"],
+                        query="hello",
+                    )
+                )
+
+            await asyncio.wait_for(
+                asyncio.to_thread(_probe_rerank),
+                timeout=timeout_seconds,
+            )
 
         else:
             raise ValueError(f"Unsupported category for testing: {request.category}")

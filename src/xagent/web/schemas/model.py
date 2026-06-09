@@ -207,6 +207,8 @@ class ModelConnectionTestRequest(BaseModel):
     temperature: Optional[float] = None
     dimension: Optional[int] = None
     abilities: Optional[List[str]] = None
+    top_n: Optional[int] = None
+    instruct: Optional[str] = None
 
 
 class UserDefaultModelCreate(BaseModel):
