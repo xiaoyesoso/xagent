@@ -6,15 +6,46 @@ import requests
 
 from .base import BaseRerank
 
-OLD_FORMAT_MODELS = {"gte-rerank-v2"}
-"""A set of model names that use the old WebAPI JSON format.
+# Model names that use the OpenAI-compatible /compatible-api/v1/reranks
+# endpoint with the new payload/response shape.
+NEW_FORMAT_MODELS = {"qwen3-rerank"}
+# Model names that use the legacy WebAPI endpoint
+# (/api/v1/services/rerank/text-rerank/text-rerank) with the
+# `input`/`parameters` payload and `output.results` response.
+OLD_FORMAT_MODELS = {"gte-rerank-v2", "qwen3-vl-rerank"}
 
-see: https://help.aliyun.com/model-studio/text-rerank-api
+OLD_URL = (
+    "https://dashscope.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank"
+)
+NEW_URL = "https://dashscope.aliyuncs.com/compatible-api/v1/reranks"
+"""Default endpoints, keyed by format family.
+
+See: https://help.aliyun.com/zh/model-studio/text-rerank-api
 """
 
 
+def _default_url_for(model: str) -> str:
+    """Return the default endpoint for ``model``."""
+    if model.lower() in NEW_FORMAT_MODELS:
+        return NEW_URL
+    return OLD_URL
+
+
 class DashscopeRerank(BaseRerank):
-    """Dashscope rerank model implementation."""
+    """Dashscope rerank model implementation.
+
+    Supports both API formats documented at
+    https://help.aliyun.com/zh/model-studio/text-rerank-api:
+
+    * New format (``qwen3-rerank``): OpenAI-compatible
+      ``/compatible-api/v1/reranks`` endpoint, with top-level
+      ``query``/``documents``/``top_n``/``instruct`` and a flat
+      ``results`` array.
+    * Old format (``gte-rerank-v2``, ``qwen3-vl-rerank``): legacy WebAPI
+      ``/api/v1/services/rerank/text-rerank/text-rerank`` endpoint, with
+      ``input``/``parameters`` and an ``output.results`` array that
+      echoes the document text.
+    """
 
     def __init__(
         self,
@@ -28,23 +59,25 @@ class DashscopeRerank(BaseRerank):
         Initialize Dashscope rerank model.
 
         Args:
-            model: Model name (default: qwen3-rerank)
-            api_key: API key (defaults to DASHSCOPE_API_KEY env var)
-            base_url: API base URL (defaults to DashScope rerank endpoint)
-            top_n: Number of top results to return
-            instruct: Custom instruction for reranking
+            model: Model name (default: ``qwen3-rerank``).
+            api_key: API key (defaults to ``DASHSCOPE_API_KEY`` env var).
+            base_url: API base URL. Defaults to the endpoint matching
+                ``model``'s format family.
+            top_n: Number of top results to return.
+            instruct: Custom instruction for reranking (new-format models).
         """
         self.model = model
         self.api_key = api_key or os.getenv("DASHSCOPE_API_KEY")
         self.top_n = top_n
         self.instruct = instruct
-        self.url = (
-            base_url
-            or "https://dashscope.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank"
-        )
+        self.url = base_url or _default_url_for(model)
 
         if not self.api_key:
             raise ValueError("API key required")
+
+    @property
+    def is_new_format(self) -> bool:
+        return self.model.lower() in NEW_FORMAT_MODELS
 
     def compress(
         self,
@@ -54,21 +87,17 @@ class DashscopeRerank(BaseRerank):
         """
         Rerank documents based on query relevance.
 
-        Supports two API formats:
-        - New format (qwen3-rerank): query and documents at top level
-        - Old format (gte-rerank-v2): query and documents in input field
-
         Args:
-            documents: List of document strings to rerank
-            query: Query string
+            documents: List of document strings to rerank.
+            query: Query string.
 
         Returns:
-            Reranked list of documents
+            Reranked list of documents.
 
         Raises:
-            requests.HTTPError: If API returns non-2xx status
-            KeyError: If API response has unexpected format
-            ValueError: If index in response is invalid
+            requests.HTTPError: If API returns non-2xx status.
+            KeyError: If API response has unexpected format.
+            ValueError: If index in response is invalid.
         """
         headers = {
             "Authorization": f"Bearer {self.api_key}",
@@ -77,7 +106,8 @@ class DashscopeRerank(BaseRerank):
 
         documents = list(documents)
 
-        is_new_format = self.model.lower() not in OLD_FORMAT_MODELS
+        if not documents:
+            return []
 
         optional_params: dict[str, Any] = {}
         if self.top_n is not None:
@@ -86,16 +116,13 @@ class DashscopeRerank(BaseRerank):
             optional_params["instruct"] = self.instruct
 
         payload: dict[str, Any]
-
-        if is_new_format:
-            # New format (qwen3-rerank)
+        if self.is_new_format:
             payload = {
                 "model": self.model,
                 "query": query,
                 "documents": documents,
             } | optional_params
         else:
-            # Old format (gte-rerank-v2)
             payload = {
                 "model": self.model,
                 "input": {
@@ -107,18 +134,21 @@ class DashscopeRerank(BaseRerank):
 
         response = requests.post(self.url, headers=headers, json=payload)
         response.raise_for_status()
-
         data = response.json()
 
-        if is_new_format:
-            # New qwen3-rerank format, no “documents.text” field!
+        if self.is_new_format:
+            # New qwen3-rerank format: no nested "output" wrapper, no
+            # "document.text" in results.
             # eg:
-            # {"object":"list","results":[{"index":0,"relevance_score":0.923461278969369},{"index":2,"relevance_score":0.7611337117952084}],"model":"qwen3-rerank","id":"f43f3fd9-db15-99da-8a0d-e21420198696","usage":{"total_tokens":105}}
+            # {"object":"list","results":[{"index":0,"relevance_score":0.92}, ...],
+            #  "model":"qwen3-rerank","id":"...","usage":{"total_tokens":105}}
             results = data["results"]
             return [documents[int(result["index"])] for result in results]
-        else:
-            # Old qwen3-gte-rerank-v2 format
-            # eg:
-            # {"output":{"results":[{"document":{"text":"..."},"index":0,"relevance_score":0.9272574008348661},{"document":{"text":"..."},"index":2,"relevance_score":0.7576691095659295}]},"usage":{"total_tokens":105},"request_id":"56a156f6-9b3a-47a8-b21c-0bf3415b8177"}
-            results = data["output"]["results"]
-            return [result["document"]["text"] for result in results]
+
+        # Old format: gte-rerank-v2 / qwen3-vl-rerank.
+        # eg:
+        # {"output":{"results":[{"document":{"text":"..."},"index":0,
+        #                       "relevance_score":0.92}, ...]},
+        #  "usage":{...},"request_id":"..."}
+        results = data["output"]["results"]
+        return [result["document"]["text"] for result in results]
