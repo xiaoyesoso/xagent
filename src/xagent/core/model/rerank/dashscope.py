@@ -152,3 +152,68 @@ class DashscopeRerank(BaseRerank):
         #  "usage":{...},"request_id":"..."}
         results = data["output"]["results"]
         return [result["document"]["text"] for result in results]
+
+    def compress_with_scores(
+        self,
+        documents: Sequence[str],
+        query: str,
+    ) -> list[tuple[str, float]]:
+        """Like :meth:`compress` but also returns the relevance score per doc.
+
+        Returns a list of ``(text, relevance_score)`` tuples ordered by
+        descending relevance.
+        """
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+        }
+
+        documents = list(documents)
+        if not documents:
+            return []
+
+        optional_params: dict[str, Any] = {}
+        if self.top_n is not None:
+            optional_params["top_n"] = self.top_n
+        if self.instruct is not None:
+            optional_params["instruct"] = self.instruct
+
+        payload: dict[str, Any]
+        if self.is_new_format:
+            payload = {
+                "model": self.model,
+                "query": query,
+                "documents": documents,
+            } | optional_params
+        else:
+            payload = {
+                "model": self.model,
+                "input": {
+                    "query": query,
+                    "documents": documents,
+                },
+                "parameters": {"return_documents": True} | optional_params,
+            }
+
+        response = requests.post(self.url, headers=headers, json=payload)
+        response.raise_for_status()
+        data = response.json()
+
+        if self.is_new_format:
+            results = data["results"]
+            return [
+                (
+                    documents[int(item["index"])],
+                    float(item.get("relevance_score", 0.0)),
+                )
+                for item in results
+            ]
+
+        results = data["output"]["results"]
+        return [
+            (
+                item["document"]["text"],
+                float(item.get("relevance_score", 0.0)),
+            )
+            for item in results
+        ]

@@ -795,6 +795,9 @@ async def _list_collections_impl(
                 "embedding_dimension": (
                     metadata_info.embedding_dimension if metadata_info else None
                 ),
+                "rerank_model_id": (
+                    metadata_info.rerank_model_id if metadata_info else None
+                ),
                 "documents": stats[collection_name]["documents"],
                 "parses": stats[collection_name]["parses"],
                 "chunks": stats[collection_name]["chunks"],

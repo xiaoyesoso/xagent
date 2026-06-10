@@ -198,6 +198,40 @@ def _map_reranked_texts_to_results(
     return ordered_results
 
 
+def _map_reranked_pairs_to_results(
+    reranked_pairs: Sequence[tuple[str, float]],
+    original_results: List[SearchResult],
+) -> List[SearchResult]:
+    """Map (text, rerank_score) pairs back to SearchResult, overwriting score.
+
+    The SearchResult.score field has a [0, 1] constraint and is the value
+    the UI/API exposes as ``评分``. We want this to reflect the rerank
+    model's relevance score after reranking, not the original embedding /
+    RRF score. Returns SearchResult copies with ``score`` replaced by the
+    rerank relevance score (clamped to [0, 1]).
+    """
+    text_to_results: Dict[str, List[SearchResult]] = {}
+    for result in original_results:
+        text_to_results.setdefault(result.text, []).append(result)
+
+    ordered_results: List[SearchResult] = []
+    for text, raw_score in reranked_pairs:
+        queue = text_to_results.get(text)
+        if not queue:
+            continue
+        original = queue.pop(0)
+        clamped = max(0.0, min(1.0, float(raw_score)))
+        ordered_results.append(original.model_copy(update={"score": clamped}))
+
+    # Append any remaining (un-reranked) results preserving their original
+    # scores. This keeps the result count stable even if the rerank API
+    # returns fewer items than were sent.
+    for queue in text_to_results.values():
+        ordered_results.extend(queue)
+
+    return ordered_results
+
+
 def _apply_rerank_top_k_limit(
     results: List[SearchResult], rerank_top_k: Optional[int]
 ) -> List[SearchResult]:
@@ -242,8 +276,12 @@ def _try_dashscope_rerank(
         return None
 
     try:
-        reranked_texts = dashscope_rerank.compress(documents, query_text)
-        ordered_results = _map_reranked_texts_to_results(reranked_texts, results)
+        # Use compress_with_scores so we can overwrite SearchResult.score with
+        # the rerank model's relevance score (otherwise downstream sees the
+        # original embedding/RRF score and "评分" looks identical with vs
+        # without rerank).
+        reranked_pairs = dashscope_rerank.compress_with_scores(documents, query_text)
+        ordered_results = _map_reranked_pairs_to_results(reranked_pairs, results)
 
         if not ordered_results:
             warnings.append(
@@ -251,8 +289,10 @@ def _try_dashscope_rerank(
             )
             return None
 
-        # Apply rerank_top_k limit if specified
-        ordered_results = _apply_rerank_top_k_limit(ordered_results, cfg.rerank_top_k)
+        # After rerank we always truncate to the user-requested top_k. The
+        # earlier larger fetch_top_k is the *candidate pool* for rerank to
+        # work on; the final response size is cfg.top_k.
+        ordered_results = _apply_rerank_top_k_limit(ordered_results, cfg.top_k)
         return ordered_results, True, warnings
 
     except (
@@ -559,7 +599,17 @@ def _search_documents_impl(
         progress_manager = _get_pm()
 
     requested_type = cfg.search_type
-    fetch_top_k = max(cfg.top_k, cfg.rerank_top_k or 0)
+    # When a rerank model is configured we need a larger candidate pool than
+    # the final top_k so the rerank step has meaningful re-ordering work to
+    # do. Rule: candidate_pool = max(top_k * 4, 20), capped to a reasonable
+    # ceiling. The rerank stage then truncates back to cfg.top_k.
+    rerank_enabled = bool(cfg.rerank_model_id)
+    if rerank_enabled:
+        candidate_pool = max(cfg.top_k * 4, 20)
+        candidate_pool = min(candidate_pool, 100)
+        fetch_top_k = max(cfg.top_k, cfg.rerank_top_k or 0, candidate_pool)
+    else:
+        fetch_top_k = max(cfg.top_k, cfg.rerank_top_k or 0)
     warnings: List[str] = []
 
     # Get collection's bound embedding model

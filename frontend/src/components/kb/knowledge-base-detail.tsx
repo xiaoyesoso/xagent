@@ -246,9 +246,9 @@ export function KnowledgeBaseDetailContent({ collectionName }: { collectionName:
   })
   const [isSavingConfig, setIsSavingConfig] = useState(false)
 
-  // Per-KB rerank model binding (independent of ingestion config)
+  // Per-KB rerank model binding (independent of ingestion config but
+  // persisted together with it via handleSaveConfig).
   const [collectionRerankModelId, setCollectionRerankModelId] = useState<string>("")
-  const [isSavingRerankModel, setIsSavingRerankModel] = useState(false)
 
   // Search states
   const [searchQuery, setSearchQuery] = useState("")
@@ -853,21 +853,10 @@ export function KnowledgeBaseDetailContent({ collectionName }: { collectionName:
         throw new Error(errorData.detail || t("kb.detail.errors.saveConfigFailed"))
       }
 
-      toast.success(t("kb.detail.success.configSaved"))
-
-      // Refresh info to ensure we're in sync
-      await fetchCollectionInfo()
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : t("kb.detail.errors.saveConfigFailed"))
-    } finally {
-      setIsSavingConfig(false)
-    }
-  }
-
-  const handleSaveRerankModel = async () => {
-    setIsSavingRerankModel(true)
-    try {
-      const response = await apiRequest(
+      // Persist per-KB rerank model binding in the same save action so the
+      // user has a single "save" button covering both ingestion settings
+      // and rerank model selection.
+      const rerankResp = await apiRequest(
         `${getApiUrl()}/api/kb/collections/${encodeURIComponent(collectionName)}/rerank-model`,
         {
           method: "PATCH",
@@ -877,18 +866,19 @@ export function KnowledgeBaseDetailContent({ collectionName }: { collectionName:
           }),
         },
       )
-
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({}))
+      if (!rerankResp.ok) {
+        const errorData = await rerankResp.json().catch(() => ({}))
         throw new Error(errorData.detail || t("kb.detail.errors.saveConfigFailed"))
       }
 
       toast.success(t("kb.detail.success.configSaved"))
+
+      // Refresh info to ensure we're in sync
       await fetchCollectionInfo()
     } catch (err) {
       toast.error(err instanceof Error ? err.message : t("kb.detail.errors.saveConfigFailed"))
     } finally {
-      setIsSavingRerankModel(false)
+      setIsSavingConfig(false)
     }
   }
 
@@ -1244,7 +1234,7 @@ export function KnowledgeBaseDetailContent({ collectionName }: { collectionName:
                 </div>
               </div>
 
-              <div className="mt-6 flex gap-2">
+              <div className="mt-6">
                 <Button onClick={handleSaveConfig} disabled={isSavingConfig}>
                   {isSavingConfig ? (
                     <>
@@ -1253,20 +1243,6 @@ export function KnowledgeBaseDetailContent({ collectionName }: { collectionName:
                     </>
                   ) : (
                     t("kb.index.saveConfig")
-                  )}
-                </Button>
-                <Button
-                  variant="outline"
-                  onClick={handleSaveRerankModel}
-                  disabled={isSavingRerankModel}
-                >
-                  {isSavingRerankModel ? (
-                    <>
-                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                      {t("kb.index.savingConfig")}
-                    </>
-                  ) : (
-                    t("kb.index.saveRerankModel")
                   )}
                 </Button>
               </div>
