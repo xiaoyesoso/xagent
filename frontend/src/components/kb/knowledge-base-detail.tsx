@@ -246,6 +246,10 @@ export function KnowledgeBaseDetailContent({ collectionName }: { collectionName:
   })
   const [isSavingConfig, setIsSavingConfig] = useState(false)
 
+  // Per-KB rerank model binding (independent of ingestion config)
+  const [collectionRerankModelId, setCollectionRerankModelId] = useState<string>("")
+  const [isSavingRerankModel, setIsSavingRerankModel] = useState(false)
+
   // Search states
   const [searchQuery, setSearchQuery] = useState("")
   const [searchResults, setSearchResults] = useState<SearchResult[]>([])
@@ -367,6 +371,9 @@ export function KnowledgeBaseDetailContent({ collectionName }: { collectionName:
       }
 
       setCollectionInfo(collection)
+
+      // Sync per-KB rerank model binding
+      setCollectionRerankModelId(collection.rerank_model_id || "")
 
       // Update ingestion config if saved in backend
       if (collection.ingestion_config) {
@@ -857,6 +864,34 @@ export function KnowledgeBaseDetailContent({ collectionName }: { collectionName:
     }
   }
 
+  const handleSaveRerankModel = async () => {
+    setIsSavingRerankModel(true)
+    try {
+      const response = await apiRequest(
+        `${getApiUrl()}/api/kb/collections/${encodeURIComponent(collectionName)}/rerank-model`,
+        {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            rerank_model_id: collectionRerankModelId || null,
+          }),
+        },
+      )
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}))
+        throw new Error(errorData.detail || t("kb.detail.errors.saveConfigFailed"))
+      }
+
+      toast.success(t("kb.detail.success.configSaved"))
+      await fetchCollectionInfo()
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : t("kb.detail.errors.saveConfigFailed"))
+    } finally {
+      setIsSavingRerankModel(false)
+    }
+  }
+
   if (loading) {
     return (
       <div className="h-full flex items-center justify-center">
@@ -1191,9 +1226,25 @@ export function KnowledgeBaseDetailContent({ collectionName }: { collectionName:
                     onChange={(e) => setIngestionConfig(prev => ({ ...prev, embedding_batch_size: parseInt(e.target.value) || 10 }))}
                   />
                 </div>
+
+                <div>
+                  <Label htmlFor="rerank_model_id_settings">{t("kb.index.rerankModelId")}</Label>
+                  <Select
+                    value={collectionRerankModelId}
+                    onValueChange={(value) => setCollectionRerankModelId(value)}
+                    options={[
+                      { value: "", label: t("kb.detail.search.rerankPlaceholder") || "(none)" },
+                      ...rerankModels.map((model) => ({
+                        value: model.model_id,
+                        label: model.model_name || model.name || model.model_id,
+                      })),
+                    ]}
+                  />
+                  <p className="text-xs text-muted-foreground mt-1">{t("kb.index.rerankModelHint")}</p>
+                </div>
               </div>
 
-              <div className="mt-6">
+              <div className="mt-6 flex gap-2">
                 <Button onClick={handleSaveConfig} disabled={isSavingConfig}>
                   {isSavingConfig ? (
                     <>
@@ -1202,6 +1253,20 @@ export function KnowledgeBaseDetailContent({ collectionName }: { collectionName:
                     </>
                   ) : (
                     t("kb.index.saveConfig")
+                  )}
+                </Button>
+                <Button
+                  variant="outline"
+                  onClick={handleSaveRerankModel}
+                  disabled={isSavingRerankModel}
+                >
+                  {isSavingRerankModel ? (
+                    <>
+                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                      {t("kb.index.savingConfig")}
+                    </>
+                  ) : (
+                    t("kb.index.saveRerankModel")
                   )}
                 </Button>
               </div>

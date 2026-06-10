@@ -1,7 +1,7 @@
 """Knowledge base tools registration using @register_tool decorator."""
 
 import logging
-from typing import TYPE_CHECKING, Any, List, Optional
+from typing import TYPE_CHECKING, Any, List
 
 from .factory import register_tool
 
@@ -42,14 +42,6 @@ async def _create_knowledge_tools_impl(config: "BaseToolConfig") -> List[Any]:
         if allowed_collections is not None and len(allowed_collections) == 0:
             return []
 
-        # Resolve the user's default rerank model (if any) so that
-        # knowledge_search reranks retrieved chunks before returning.
-        rerank_model_id: Optional[str] = None
-        try:
-            rerank_model_id = config.get_rerank_model()
-        except Exception as exc:  # noqa: BLE001
-            logger.debug("Failed to resolve user default rerank model: %s", exc)
-
         if allowed_collections is None:
             list_tool = get_list_knowledge_bases_tool(
                 allowed_collections=allowed_collections,
@@ -58,8 +50,11 @@ async def _create_knowledge_tools_impl(config: "BaseToolConfig") -> List[Any]:
             )
             tools.append(list_tool)
 
+        # NOTE: Do not inject the user's default rerank model here.
+        # rerank is per-KB: the search pipeline only reranks when the
+        # KB it is querying has rerank_model_id configured in its
+        # collection metadata.
         knowledge_tool = get_knowledge_search_tool(
-            rerank_model_id=rerank_model_id,
             allowed_collections=allowed_collections,
             user_id=user_id,
             is_admin=is_admin,

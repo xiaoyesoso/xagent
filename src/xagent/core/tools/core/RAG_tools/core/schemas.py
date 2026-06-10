@@ -1312,6 +1312,19 @@ class CollectionInfo(BaseModel):
         description="Vector dimension. Auto-detected from embedding model.",
     )
 
+    # 🎯 Optional binding: Rerank model configuration
+    # When set, the search pipeline will rerank retrieved chunks using
+    # this model. When None, no rerank stage is added — this is what
+    # decides whether knowledge_search performs reranking for this KB.
+    rerank_model_id: Optional[str] = Field(
+        default=None,
+        description=(
+            "Optional rerank model ID (registered in the model hub). When set, "
+            "knowledge_search adds a rerank stage for this collection. "
+            "When None, no rerank is performed."
+        ),
+    )
+
     # 📊 Statistics
     documents: int = Field(0, description="Total number of registered documents")
     processed_documents: int = Field(
