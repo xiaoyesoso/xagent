@@ -230,6 +230,7 @@ export function KnowledgeBaseDetailContent({ collectionName }: { collectionName:
   // Embedding models state
   const [embeddingModels, setEmbeddingModels] = useState<any[]>([])
   const [defaultEmbeddingModel, setDefaultEmbeddingModel] = useState<string | null>(null)
+  const [rerankModels, setRerankModels] = useState<any[]>([])
 
   // Ingestion configuration
   const [ingestionConfig, setIngestionConfig] = useState<IngestionConfig>({
@@ -259,6 +260,7 @@ export function KnowledgeBaseDetailContent({ collectionName }: { collectionName:
   useEffect(() => {
     fetchCollectionInfo()
     fetchEmbeddingModels()
+    fetchRerankModels()
   }, [collectionName])
 
   useEffect(() => {
@@ -332,6 +334,19 @@ export function KnowledgeBaseDetailContent({ collectionName }: { collectionName:
       }
     } catch (err) {
       console.error("Failed to fetch embedding models:", err)
+    }
+  }
+
+  const fetchRerankModels = async () => {
+    try {
+      const response = await apiRequest(`${getApiUrl()}/api/models/?category=rerank`)
+      if (!response.ok) {
+        throw new Error("Failed to fetch rerank models")
+      }
+      const models = (await response.json()) || []
+      setRerankModels(models)
+    } catch (err) {
+      console.error("Failed to fetch rerank models:", err)
     }
   }
 
@@ -1006,11 +1021,16 @@ export function KnowledgeBaseDetailContent({ collectionName }: { collectionName:
                 </div>
                 <div>
                   <Label htmlFor="rerank_model_id">{t("kb.detail.search.rerankModelIdLabel")}</Label>
-                  <Input
-                    id="rerank_model_id"
+                  <Select
                     value={searchConfig.rerank_model_id}
-                    onChange={(e) => setSearchConfig(prev => ({ ...prev, rerank_model_id: e.target.value }))}
-                    placeholder={t("kb.detail.search.rerankPlaceholder")}
+                    onValueChange={(value) => setSearchConfig(prev => ({ ...prev, rerank_model_id: value }))}
+                    options={[
+                      { value: "", label: t("kb.detail.search.rerankPlaceholder") || "(none)" },
+                      ...rerankModels.map((model) => ({
+                        value: model.model_id,
+                        label: model.model_name || model.name || model.model_id,
+                      })),
+                    ]}
                   />
                 </div>
               </div>

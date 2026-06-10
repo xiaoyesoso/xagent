@@ -60,6 +60,14 @@ class BaseToolConfig(ABC):
         """Get embedding model ID."""
         pass
 
+    def get_rerank_model(self) -> Optional[str]:
+        """Get rerank model ID (registered in model hub).
+
+        Default implementation returns ``None``; web/tool implementations
+        should resolve the user's default rerank model from the database.
+        """
+        return None
+
     @abstractmethod
     def get_browser_tools_enabled(self) -> bool:
         """Whether to include browser automation tools."""

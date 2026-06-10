@@ -53,6 +53,10 @@ class KnowledgeSearchArgs(BaseModel):
     embedding_model_id: Optional[str] = Field(
         default=None, description="Optional embedding model ID to use for searches"
     )
+    rerank_model_id: Optional[str] = Field(
+        default=None,
+        description="Optional rerank model ID (registered in model hub) to rerank search results",
+    )
     allowed_collections: Optional[List[str]] = Field(
         default=None,
         description="Optional list of allowed collection names. Used as default when collections is empty.",
@@ -292,6 +296,9 @@ async def _search_knowledge_base_impl(
 
         if tool_args.embedding_model_id:
             search_config["embedding_model_id"] = tool_args.embedding_model_id
+
+        if tool_args.rerank_model_id:
+            search_config["rerank_model_id"] = tool_args.rerank_model_id
 
         # Search across collections and aggregate results
         all_results = []
