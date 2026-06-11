@@ -3434,7 +3434,7 @@ async def set_collection_rerank_model(
         # Load existing config for this user or start fresh
         config_json = await metadata_store.get_collection_config(
             collection=safe_collection,
-            user_id=_user.id,
+            user_id=int(_user.id),
         )
         if config_json:
             config_dict = json.loads(config_json)
@@ -3447,7 +3447,7 @@ async def set_collection_rerank_model(
         await metadata_store.save_collection_config(
             collection=safe_collection,
             config_json=updated.model_dump_json(),
-            user_id=_user.id,
+            user_id=int(_user.id),
         )
     except Exception as e:
         logger.error(
