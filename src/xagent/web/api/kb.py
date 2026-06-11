@@ -3425,9 +3425,7 @@ async def set_collection_rerank_model(
         )
 
         collection_info = await collection_manager.get_collection(safe_collection)
-        updated = collection_info.model_copy(
-            update={"rerank_model_id": normalized}
-        )
+        updated = collection_info.model_copy(update={"rerank_model_id": normalized})
         await collection_manager.save_collection(updated)
     except Exception as e:
         logger.error(
