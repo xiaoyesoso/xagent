@@ -31,7 +31,7 @@ from xagent.core.tools.core.RAG_tools.parse.parse_document import parse_document
 from xagent.core.tools.core.RAG_tools.pipelines import document_search
 from xagent.core.tools.core.RAG_tools.pipelines.document_search import (
     _apply_rerank_if_needed,
-    _resolve_dashscope_rerank,
+    _resolve_unified_rerank,
 )
 from xagent.core.tools.core.RAG_tools.storage.factory import (
     get_vector_index_store,
@@ -391,50 +391,30 @@ def test_chinese_sparse_search(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
     print("=" * 60)
 
 
-def test_resolve_dashscope_rerank_priority(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Test environment variable priority for DashScope rerank configuration."""
-    # Test 1: DASHSCOPE_RERANK_* variables are used (no fallback to DASHSCOPE_MODEL)
-    monkeypatch.setenv("DASHSCOPE_RERANK_ENABLED", "true")
-    monkeypatch.setenv("DASHSCOPE_RERANK_MODEL", "qwen3-rerank")
-    monkeypatch.setenv("DASHSCOPE_RERANK_API_KEY", "rerank-key")
-    monkeypatch.setenv("DASHSCOPE_API_KEY", "shared-key")
+def test_resolve_rerank_requires_model_id() -> None:
+    """Verify that rerank resolver returns None when no rerank_model_id is provided.
 
-    rerank = _resolve_dashscope_rerank()
-    assert rerank is not None
-    assert rerank.model == "qwen3-rerank"
-    assert rerank.api_key == "rerank-key"
+    This ensures "no KB binding = no rerank" contract is respected.
+    """
+    # Without any config or with config missing rerank_model_id, should return None
+    result = _resolve_unified_rerank()
+    assert result is None
 
-    # Test 2: Fallback to DASHSCOPE_API_KEY when DASHSCOPE_RERANK_API_KEY not set
-    monkeypatch.delenv("DASHSCOPE_RERANK_API_KEY", raising=False)
-    monkeypatch.setenv("DASHSCOPE_API_KEY", "shared-key")
-    monkeypatch.setenv("DASHSCOPE_RERANK_MODEL", "qwen3-rerank")
-
-    rerank = _resolve_dashscope_rerank()
-    assert rerank is not None
-    assert rerank.model == "qwen3-rerank"
-    assert rerank.api_key == "shared-key"  # Should fallback to shared key
-
-    # Test 3: Disabled when DASHSCOPE_RERANK_ENABLED=false
-    monkeypatch.setenv("DASHSCOPE_RERANK_ENABLED", "false")
-    rerank = _resolve_dashscope_rerank()
-    assert rerank is None
-
-    # Test 4: Returns None when API key missing
-    monkeypatch.setenv("DASHSCOPE_RERANK_ENABLED", "true")
-    monkeypatch.setenv("DASHSCOPE_RERANK_MODEL", "qwen3-rerank")
-    monkeypatch.delenv("DASHSCOPE_RERANK_API_KEY", raising=False)
-    monkeypatch.delenv("DASHSCOPE_API_KEY", raising=False)
-    rerank = _resolve_dashscope_rerank()
-    assert rerank is None
+    cfg_no_rerank = SearchConfig(embedding_model_id="test-embed")
+    result = _resolve_unified_rerank(cfg_no_rerank)
+    assert result is None
 
 
 def test_apply_rerank_dashscope_success(monkeypatch: pytest.MonkeyPatch) -> None:
     """Test DashScope rerank succeeds."""
     # Setup mock DashScope rerank
     mock_rerank = MagicMock()
-    mock_rerank.compress.return_value = ["doc3", "doc1", "doc2"]
+    # New unified rerank path uses compress_with_scores returning (text, score) tuples
+    mock_rerank.compress_with_scores.return_value = [
+        ("doc3", 0.95),
+        ("doc1", 0.85),
+        ("doc2", 0.75),
+    ]
 
     # Create test results
     results = [
@@ -479,11 +459,14 @@ def test_apply_rerank_dashscope_success(monkeypatch: pytest.MonkeyPatch) -> None
         ),
     ]
 
-    cfg = SearchConfig(embedding_model_id="test-embed", rerank_top_k=5)
+    # Need rerank_model_id set for _resolve_unified_rerank to not short-circuit
+    cfg = SearchConfig(
+        embedding_model_id="test-embed", rerank_top_k=5, rerank_model_id="qwen3-rerank"
+    )
 
-    # Mock _resolve_dashscope_rerank to return our mock
+    # Mock _resolve_unified_rerank to return our mock
     with patch(
-        "xagent.core.tools.core.RAG_tools.pipelines.document_search._resolve_dashscope_rerank",
+        "xagent.core.tools.core.RAG_tools.pipelines.document_search._resolve_unified_rerank",
         return_value=mock_rerank,
     ):
         reranked, used_rerank, warnings = _apply_rerank_if_needed(
@@ -495,8 +478,14 @@ def test_apply_rerank_dashscope_success(monkeypatch: pytest.MonkeyPatch) -> None
     assert reranked[0].text == "doc3"
     assert reranked[1].text == "doc1"
     assert reranked[2].text == "doc2"
+    # Score should be updated with rerank relevance scores (clamped to [0, 1])
+    assert reranked[0].score == pytest.approx(0.95)
+    assert reranked[1].score == pytest.approx(0.85)
+    assert reranked[2].score == pytest.approx(0.75)
     assert len(warnings) == 0
-    mock_rerank.compress.assert_called_once_with(["doc1", "doc2", "doc3"], "test query")
+    mock_rerank.compress_with_scores.assert_called_once_with(
+        ["doc1", "doc2", "doc3"], "test query"
+    )
 
 
 def test_apply_rerank_dashscope_failure_fallback_to_rrf(
@@ -506,7 +495,7 @@ def test_apply_rerank_dashscope_failure_fallback_to_rrf(
     # Setup mock DashScope rerank that raises exception
     # Use RequestException to match actual DashScope API behavior
     mock_rerank = MagicMock()
-    mock_rerank.compress.side_effect = requests.exceptions.RequestException(
+    mock_rerank.compress_with_scores.side_effect = requests.exceptions.RequestException(
         "DashScope API error"
     )
 
@@ -540,13 +529,14 @@ def test_apply_rerank_dashscope_failure_fallback_to_rrf(
         ),
     ]
 
-    cfg = SearchConfig(embedding_model_id="test-embed")
+    # Need rerank_model_id set for _resolve_unified_rerank to not short-circuit
+    cfg = SearchConfig(embedding_model_id="test-embed", rerank_model_id="qwen3-rerank")
     monkeypatch.setenv("DASHSCOPE_RERANK_FALLBACK_TO_LANCEDB", "true")
     monkeypatch.setenv("DASHSCOPE_RERANK_RRF_K", "60")
 
-    # Mock _resolve_dashscope_rerank to return our mock
+    # Mock _resolve_unified_rerank to return our mock
     with patch(
-        "xagent.core.tools.core.RAG_tools.pipelines.document_search._resolve_dashscope_rerank",
+        "xagent.core.tools.core.RAG_tools.pipelines.document_search._resolve_unified_rerank",
         return_value=mock_rerank,
     ):
         reranked, used_rerank, warnings = _apply_rerank_if_needed(
@@ -557,7 +547,7 @@ def test_apply_rerank_dashscope_failure_fallback_to_rrf(
     assert used_rerank is True
     assert len(reranked) == 2
     assert len(warnings) > 0
-    assert any("DashScope rerank failed" in w for w in warnings)
+    assert any("rerank failed" in w and "RRF fallback" in w for w in warnings)
     # RRF should reorder based on ranks (lower rank = better)
     # Both results should be present
     assert all(r.text in ["doc1", "doc2"] for r in reranked)
