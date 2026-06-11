@@ -297,9 +297,7 @@ def _map_reranked_pairs_to_results(
     # violate the [0.0, 1.0] score contract with negative values.
     for queue in text_to_results.values():
         for unreranked in queue:
-            ordered_results.append(
-                unreranked.model_copy(update={"score": 0.0})
-            )
+            ordered_results.append(unreranked.model_copy(update={"score": 0.0}))
 
     return ordered_results
 

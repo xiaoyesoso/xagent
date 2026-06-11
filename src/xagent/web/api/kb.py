@@ -3425,11 +3425,11 @@ async def set_collection_rerank_model(
 
     try:
         from xagent.core.tools.core.RAG_tools.core.schemas import IngestionConfig
-        from xagent.core.tools.core.RAG_tools.storage.lancedb_stores import (
-            get_lancedb_metadata_store,
+        from xagent.core.tools.core.RAG_tools.storage.factory import (
+            get_metadata_store,
         )
 
-        metadata_store = await get_lancedb_metadata_store()
+        metadata_store = get_metadata_store()
 
         # Load existing config for this user or start fresh
         config_json = await metadata_store.get_collection_config(
