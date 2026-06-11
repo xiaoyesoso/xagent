@@ -796,7 +796,7 @@ async def _list_collections_impl(
                     metadata_info.embedding_dimension if metadata_info else None
                 ),
                 "rerank_model_id": (
-                    metadata_info.rerank_model_id if metadata_info else None
+                    ingestion_config.rerank_model_id if ingestion_config else None
                 ),
                 "documents": stats[collection_name]["documents"],
                 "parses": stats[collection_name]["parses"],

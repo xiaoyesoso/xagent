@@ -1066,6 +1066,11 @@ class IngestionConfig(BaseModel):
         description="Override embedding request timeout (seconds).",
     )
 
+    rerank_model_id: Optional[str] = Field(
+        default=None,
+        description="Bound rerank model ID for this collection (user-scoped).",
+    )
+
     parse_method: ParseMethod = Field(
         ParseMethod.DEFAULT, description="Parse method used during parse_document step"
     )
@@ -1436,9 +1441,6 @@ class CollectionInfo(BaseModel):
         if data.get("embedding_dimension") == LANCEDB_NULL_INT_SENTINEL:
             data["embedding_dimension"] = None
 
-        if data.get("rerank_model_id") == LANCEDB_NULL_STR_SENTINEL:
-            data["rerank_model_id"] = None
-
         # 3. Check version and migrate if needed (no DB access on read path)
         current_version = "1.0.0"
         data_version = data.get("schema_version", "0.0.0")
@@ -1457,7 +1459,7 @@ class CollectionInfo(BaseModel):
         """
         import json
 
-        data = self.model_dump(exclude={"document_metadata"})
+        data = self.model_dump(exclude={"document_metadata", "rerank_model_id"})
 
         # Serialize complex types to JSON strings for LanceDB
         data["extra_metadata"] = json.dumps(data["extra_metadata"])
@@ -1477,9 +1479,6 @@ class CollectionInfo(BaseModel):
 
         if data.get("embedding_dimension") is None:
             data["embedding_dimension"] = LANCEDB_NULL_INT_SENTINEL
-
-        if data.get("rerank_model_id") is None:
-            data["rerank_model_id"] = LANCEDB_NULL_STR_SENTINEL
 
         return data
 

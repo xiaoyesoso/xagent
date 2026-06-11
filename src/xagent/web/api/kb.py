@@ -3407,6 +3407,10 @@ async def set_collection_rerank_model(
 
     When set, ``knowledge_search`` adds a rerank stage for this KB using
     the configured model. When cleared, no rerank is performed.
+
+    The rerank binding is user-scoped and stored in ``collection_config``,
+    so different users can have different rerank settings for the same
+    collection name.
     """
     try:
         safe_collection = sanitize_path_component(collection, "collection")
@@ -3420,13 +3424,31 @@ async def set_collection_rerank_model(
     normalized = (rerank_model_id or "").strip() or None
 
     try:
-        from xagent.core.tools.core.RAG_tools.management.collection_manager import (
-            collection_manager,
+        from xagent.core.tools.core.RAG_tools.core.schemas import IngestionConfig
+        from xagent.core.tools.core.RAG_tools.storage.lancedb_stores import (
+            get_lancedb_metadata_store,
         )
 
-        collection_info = await collection_manager.get_collection(safe_collection)
-        updated = collection_info.model_copy(update={"rerank_model_id": normalized})
-        await collection_manager.save_collection(updated)
+        metadata_store = await get_lancedb_metadata_store()
+
+        # Load existing config for this user or start fresh
+        config_json = await metadata_store.get_collection_config(
+            collection=safe_collection,
+            user_id=_user.id,
+        )
+        if config_json:
+            config_dict = json.loads(config_json)
+            config = IngestionConfig(**config_dict)
+        else:
+            config = IngestionConfig()
+
+        # Update only the rerank_model_id field, preserving all other settings
+        updated = config.model_copy(update={"rerank_model_id": normalized})
+        await metadata_store.save_collection_config(
+            collection=safe_collection,
+            config_json=updated.model_dump_json(),
+            user_id=_user.id,
+        )
     except Exception as e:
         logger.error(
             "Failed to set rerank model for collection %s: %s",

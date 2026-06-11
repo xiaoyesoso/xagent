@@ -654,7 +654,6 @@ def ensure_collection_metadata_table(conn: DBConnection) -> None:
             pa.field("schema_version", pa.string()),
             pa.field("embedding_model_id", pa.string()),
             pa.field("embedding_dimension", pa.int32()),
-            pa.field("rerank_model_id", pa.string()),
             pa.field("documents", pa.int32()),
             pa.field("processed_documents", pa.int32()),
             pa.field("parses", pa.int32()),
@@ -675,18 +674,3 @@ def ensure_collection_metadata_table(conn: DBConnection) -> None:
         ]
     )
     _create_table(conn, "collection_metadata", schema=schema)
-
-    # Idempotent schema migration: backfill the rerank_model_id column on
-    # existing tables created before this field was introduced.
-    try:
-        table = conn.open_table("collection_metadata")
-        existing_fields = {f.name for f in table.schema}
-        if "rerank_model_id" not in existing_fields:
-            table.add_columns({"rerank_model_id": "CAST(NULL AS STRING)"})
-    except Exception as exc:  # noqa: BLE001
-        # Non-fatal: the column will simply not be available until a process
-        # with write access performs the migration. The save path also
-        # sentinel-fills None so write failures show up as a clear error.
-        import logging
-
-        logging.getLogger(__name__).debug("rerank_model_id migration skipped: %s", exc)

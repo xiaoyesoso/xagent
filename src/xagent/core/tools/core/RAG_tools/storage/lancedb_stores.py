@@ -282,7 +282,6 @@ class LanceDBMetadataStore(MetadataStore):
                 ("schema_version", pa.string()),
                 ("embedding_model_id", pa.string()),
                 ("embedding_dimension", pa.int32()),
-                ("rerank_model_id", pa.string()),
                 ("documents", pa.int32()),
                 ("processed_documents", pa.int32()),
                 ("parses", pa.int32()),
@@ -326,13 +325,6 @@ class LanceDBMetadataStore(MetadataStore):
                         add_fn({"owners": "cast('[]' as string)"})
                         logger.info(
                             "collection_metadata: added missing 'owners' column"
-                        )
-                if "rerank_model_id" not in names:
-                    add_fn = getattr(table, "add_columns", None)
-                    if add_fn is not None:
-                        add_fn({"rerank_model_id": "CAST(NULL AS STRING)"})
-                        logger.info(
-                            "collection_metadata: added missing 'rerank_model_id' column"
                         )
             except Exception as exc:  # noqa: BLE001
                 logger.debug(
