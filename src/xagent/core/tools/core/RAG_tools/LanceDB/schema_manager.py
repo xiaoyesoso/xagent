@@ -688,6 +688,5 @@ def ensure_collection_metadata_table(conn: DBConnection) -> None:
         # with write access performs the migration. The save path also
         # sentinel-fills None so write failures show up as a clear error.
         import logging
-        logging.getLogger(__name__).debug(
-            "rerank_model_id migration skipped: %s", exc
-        )
+
+        logging.getLogger(__name__).debug("rerank_model_id migration skipped: %s", exc)
