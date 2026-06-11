@@ -32,6 +32,7 @@ DEFAULT_MODEL_CONFIG_TYPES = [
     "image_edit",
     "asr",
     "tts",
+    "rerank",
 ]
 
 
