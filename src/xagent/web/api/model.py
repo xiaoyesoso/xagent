@@ -614,7 +614,7 @@ async def test_model_connection(
             # so a stale ``base_url`` from the form cannot break the
             # connectivity probe.
             rerank_base_url = base_url
-            if provider == "dashscope":
+            if provider == "dashscope" and request.model_name:
                 rerank_base_url = _default_url_for(request.model_name)
 
             rerank_config = RerankModelConfig(
@@ -1729,13 +1729,15 @@ async def fetch_provider_models(
     provider: str,
     api_key: str = Body(...),
     base_url: Optional[str] = Body(None),
+    category: Optional[str] = Body(None),
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ) -> dict:
     """Fetch available models from a specific provider.
 
     Requires the provider's API key. For providers like Azure OpenAI,
-    base_url is also required.
+    base_url is also required. When category helps route to the correct fetcher
+    for provider+category combinations (e.g. xinference+rerank).
     """
 
     # Validate provider
@@ -1744,21 +1746,28 @@ async def fetch_provider_models(
         fetch_models_from_provider,
     )
 
-    if provider.lower() not in PROVIDER_FETCHERS:
+    # Try provider+category combination first (e.g. "xinference-rerank"),
+    # then fallback to base provider name
+    combined_key = f"{provider}-{category}" if category else None
+    if combined_key and combined_key in PROVIDER_FETCHERS:
+        provider_to_use = combined_key
+    elif provider.lower() not in PROVIDER_FETCHERS:
         raise HTTPException(
             status_code=400,
             detail=f"Unsupported provider: {provider}. Supported providers: {list(PROVIDER_FETCHERS.keys())}",
         )
+    else:
+        provider_to_use = provider.lower()
 
     # For Azure OpenAI, base_url is required
-    if provider.lower() == "azure_openai" and not base_url:
+    if provider_to_use == "azure_openai" and not base_url:
         raise HTTPException(
             status_code=400,
             detail="base_url is required for Azure OpenAI provider",
         )
 
     try:
-        models = await fetch_models_from_provider(provider, api_key, base_url)
+        models = await fetch_models_from_provider(provider_to_use, api_key, base_url)
 
         return {
             "provider": provider,

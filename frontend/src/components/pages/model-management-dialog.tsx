@@ -374,7 +374,8 @@ export function ModelManagementDialog({
       setIsFetchingModels(true)
       const models = await getProviderModels(formData.model_provider, {
         api_key: formData.api_key,
-        base_url: formData.base_url
+        base_url: formData.base_url,
+        category: formData.category,
       })
       // Strip 'models/' prefix from Gemini models returned by the SDK API
       const cleanedModels = models.map(model => {
