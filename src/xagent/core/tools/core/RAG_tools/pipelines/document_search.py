@@ -20,6 +20,7 @@ import requests
 
 from xagent.core.model.embedding.base import BaseEmbedding
 from xagent.core.model.rerank.dashscope import DashscopeRerank
+from xagent.core.model.rerank.xinference import XinferenceRerank
 
 from ..core.exceptions import (
     DocumentValidationError,
@@ -70,29 +71,48 @@ def _extract_dashscope_rerank(
     return None
 
 
-def _resolve_dashscope_rerank(
+def _extract_xinference_rerank(
+    rerank_adapter: Any,
+) -> Optional[XinferenceRerank]:
+    """Extract XinferenceRerank instance from rerank adapter.
+
+    Args:
+        rerank_adapter: Rerank adapter instance (may be wrapped).
+
+    Returns:
+        XinferenceRerank instance if found, None otherwise.
+    """
+    if isinstance(rerank_adapter, XinferenceRerank):
+        return rerank_adapter
+    if hasattr(rerank_adapter, "_rerank_model") and isinstance(
+        rerank_adapter._rerank_model, XinferenceRerank
+    ):
+        return rerank_adapter._rerank_model
+    return None
+
+
+def _resolve_unified_rerank(
     cfg: Optional[SearchConfig] = None,
-) -> Optional[DashscopeRerank]:
-    """Resolve DashScope rerank configuration with unified priority: explicit model_id > hub > env fallback.
+) -> Optional[Union[DashscopeRerank, XinferenceRerank]]:
+    """Resolve rerank configuration supporting multiple providers.
+
+    Priority: explicit model_id from cfg -> hub/user default -> env fallback.
+    Supports both DashScope and Xinference rerank models transparently.
 
     Args:
         cfg: Optional SearchConfig for parameter overrides.
 
     Returns:
-        DashscopeRerank instance if enabled and configured, None otherwise.
+        Rerank instance if enabled and configured, None otherwise.
     """
-    # Check if rerank is enabled
-    rerank_enabled = os.getenv("DASHSCOPE_RERANK_ENABLED", "true").lower() in (
-        "true",
-        "1",
-        "yes",
-    )
-    if not rerank_enabled:
+    # If no rerank_model_id is provided at all, don't even try
+    # This ensures "no KB binding = no rerank" contract is respected
+    model_id = cfg.rerank_model_id if cfg and cfg.rerank_model_id else None
+    if not model_id:
         return None
 
-    # Try unified resolver first: explicit model_id > hub > env fallback
+    # Try unified resolver: explicit model_id > hub > env fallback
     try:
-        model_id = cfg.rerank_model_id if cfg and cfg.rerank_model_id else None
         rerank_cfg, rerank_adapter = resolve_rerank_adapter(
             model_id=model_id,
             api_key=None,
@@ -102,32 +122,77 @@ def _resolve_dashscope_rerank(
         dashscope_rerank = _extract_dashscope_rerank(rerank_adapter)
         if dashscope_rerank:
             return dashscope_rerank
+        xinference_rerank = _extract_xinference_rerank(rerank_adapter)
+        if xinference_rerank:
+            return xinference_rerank
     except (RagCoreException, ValueError, TypeError, ImportError) as exc:
         logger.warning(
             "Failed to load rerank adapter from unified resolver: %s",
             exc,
         )
 
-    # Fallback to direct env configuration (legacy support)
-    env_model = os.getenv("DASHSCOPE_RERANK_MODEL")
-    env_api_key = os.getenv("DASHSCOPE_RERANK_API_KEY") or os.getenv(
-        "DASHSCOPE_API_KEY"
-    )
-
-    if env_model and env_api_key:
-        top_n_str = os.getenv("DASHSCOPE_RERANK_TOP_N")
-        top_n = int(top_n_str) if top_n_str else None
-        env_base_url = os.getenv("DASHSCOPE_RERANK_BASE_URL")
-        try:
-            return DashscopeRerank(
-                model=env_model, api_key=env_api_key, base_url=env_base_url, top_n=top_n
-            )
-        except (ValueError, TypeError) as exc:
-            logger.warning(
-                "Failed to create DashScope rerank adapter from env: %s", exc
-            )
-
     return None
+
+
+def _try_unified_rerank(
+    results: List[SearchResult],
+    query_text: str,
+    cfg: SearchConfig,
+    warnings: List[str],
+) -> Optional[Tuple[List[SearchResult], bool, List[str]]]:
+    """Try to rerank results using unified resolver (supports multiple providers).
+
+    Supports DashScope and Xinference rerank models transparently.
+
+    Args:
+        results: Search results to rerank
+        query_text: Query text for reranking
+        cfg: Search configuration
+        warnings: List to append warnings to
+
+    Returns:
+        Tuple of (reranked_results, used_rerank, warnings) if successful, None otherwise
+    """
+    rerank_model = _resolve_unified_rerank(cfg)
+
+    if rerank_model is None:
+        return None
+
+    documents = [result.text for result in results]
+    if not documents:
+        return None
+
+    try:
+        # Both DashscopeRerank and XinferenceRerank have compress_with_scores()
+        # that returns Sequence[tuple[str, float]]
+        reranked_pairs = rerank_model.compress_with_scores(documents, query_text)
+        ordered_results = _map_reranked_pairs_to_results(reranked_pairs, results)
+
+        if not ordered_results:
+            provider_name = type(rerank_model).__name__
+            warnings.append(
+                f"{provider_name} rerank returned no recognizable documents; "
+                "falling back to RRF."
+            )
+            return None
+
+        # After rerank we always truncate to the user-requested top_k. The
+        # earlier larger fetch_top_k is the *candidate pool* for rerank to
+        # work on; the final response size is cfg.top_k.
+        ordered_results = _apply_rerank_top_k_limit(ordered_results, cfg.top_k)
+        return ordered_results, True, warnings
+
+    except (
+        requests.exceptions.RequestException,
+        requests.exceptions.HTTPError,
+        KeyError,
+        ValueError,
+        TypeError,
+    ) as exc:
+        provider_name = type(rerank_model).__name__
+        logger.warning("%s rerank failed: %s, falling back to RRF", provider_name, exc)
+        warnings.append(f"{provider_name} rerank failed: {exc}, using RRF fallback")
+        return None
 
 
 def _encode_query_vector(adapter: BaseEmbedding, query_text: str) -> List[float]:
@@ -371,11 +436,12 @@ def _apply_rerank_if_needed(
     query_text: str,
     cfg: SearchConfig,
 ) -> Tuple[List[SearchResult], bool, List[str]]:
-    """Optionally rerank search results using DashScope -> LanceDB RRF 2-tier fallback.
+    """Optionally rerank search results using unified resolver -> LanceDB RRF 2-tier fallback.
 
     Strategy:
-    1. Try DashScope rerank API (from env vars or model hub)
-    2. If DashScope fails or is disabled, fallback to LanceDB RRF using original scores/ranks
+    1. Try unified rerank (DashScope / Xinference, from model hub via cfg.rerank_model_id)
+    2. If unified rerank fails or is not configured, try legacy DashScope env-based rerank
+    3. If DashScope fails, fallback to LanceDB RRF using original scores/ranks
 
     Args:
         results: Search results to rerank (should have vector_score, fts_score, vector_rank, fts_rank)
@@ -390,10 +456,19 @@ def _apply_rerank_if_needed(
         logger.debug("Skipping rerank: No search results to rerank")
         return results, False, warnings
 
-    # Try DashScope rerank first (if enabled and configured)
+    # Try unified rerank first (DashScope / Xinference via model hub)
+    # This is the primary path when a KB has a rerank model binding
+    unified_result = _try_unified_rerank(results, query_text, cfg, warnings)
+    if unified_result:
+        rerank_model = _resolve_unified_rerank(cfg)
+        provider_name = type(rerank_model).__name__ if rerank_model else "Unified"
+        logger.info("Successfully applied %s rerank", provider_name)
+        return unified_result
+
+    # Fallback to legacy DashScope env-based rerank (preserves backward compat)
     dashscope_result = _try_dashscope_rerank(results, query_text, cfg, warnings)
     if dashscope_result:
-        logger.info("Successfully applied DashScope rerank")
+        logger.info("Successfully applied DashScope rerank (legacy env config)")
         return dashscope_result
 
     # Fallback to LanceDB RRF if DashScope failed or is disabled
