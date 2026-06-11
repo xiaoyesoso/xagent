@@ -329,7 +329,7 @@ class ModelStore:
 
         bind = self.db.get_bind()
         dialect = bind.dialect.name if bind is not None else ""
-        stmt = None
+        stmt: Any = None
         if dialect == "sqlite":
             stmt = sqlite_insert(UserDefaultModel).values(
                 user_id=user_id, model_id=model_id, config_type=config_type
@@ -375,7 +375,7 @@ class ModelStore:
         )
         new_default_is_shared = bool(user_model.is_shared)
         invalidate_model_cache(None if new_default_is_shared else user_id)
-        return user_default
+        return user_default  # type: ignore[return-value]  # Always exists after commit
 
     def delete_user_default_model(
         self, *, user_id: int, config_type: str

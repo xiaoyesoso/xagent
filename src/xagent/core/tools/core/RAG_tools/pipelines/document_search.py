@@ -320,7 +320,7 @@ def _try_dashscope_rerank(
     cfg: SearchConfig,
     warnings: List[str],
 ) -> Optional[Tuple[List[SearchResult], bool, List[str]]]:
-    """Try to rerank results using DashScope rerank API.
+    """Try to rerank results using DashScope rerank API (legacy env config).
 
     Args:
         results: Search results to rerank
@@ -331,9 +331,9 @@ def _try_dashscope_rerank(
     Returns:
         Tuple of (reranked_results, used_rerank, warnings) if successful, None otherwise
     """
-    dashscope_rerank = _resolve_dashscope_rerank(cfg)
-
-    if dashscope_rerank is None:
+    # Use unified resolver but only accept DashscopeRerank type for legacy path
+    rerank_model = _resolve_unified_rerank(cfg)
+    if not isinstance(rerank_model, DashscopeRerank):
         return None
 
     documents = [result.text for result in results]
@@ -345,7 +345,7 @@ def _try_dashscope_rerank(
         # the rerank model's relevance score (otherwise downstream sees the
         # original embedding/RRF score and "评分" looks identical with vs
         # without rerank).
-        reranked_pairs = dashscope_rerank.compress_with_scores(documents, query_text)
+        reranked_pairs = rerank_model.compress_with_scores(documents, query_text)
         ordered_results = _map_reranked_pairs_to_results(reranked_pairs, results)
 
         if not ordered_results:
@@ -487,8 +487,8 @@ def _apply_rerank_if_needed(
     else:
         # Only warn if rerank was attempted but fallback is disabled
         # If rerank is completely disabled (no DashScope and no fallback), no warning needed
-        dashscope_rerank = _resolve_dashscope_rerank(cfg)
-        if dashscope_rerank is not None or any(
+        rerank_model = _resolve_unified_rerank(cfg)
+        if isinstance(rerank_model, DashscopeRerank) or any(
             r.vector_score is not None or r.fts_score is not None for r in results
         ):
             warnings.append("Rerank fallback to LanceDB is disabled")
