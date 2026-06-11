@@ -324,8 +324,8 @@ class ModelStore:
         # two set_default requests for the same (user_id, config_type)
         # before either has committed. delete-then-insert is racy
         # under SQLite because there is no row-level locking.
-        from sqlalchemy.dialects.sqlite import insert as sqlite_insert
         from sqlalchemy.dialects.postgresql import insert as pg_insert
+        from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
         bind = self.db.get_bind()
         dialect = bind.dialect.name if bind is not None else ""
