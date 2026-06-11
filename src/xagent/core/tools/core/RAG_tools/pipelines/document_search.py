@@ -274,6 +274,11 @@ def _map_reranked_pairs_to_results(
     model's relevance score after reranking, not the original embedding /
     RRF score. Returns SearchResult copies with ``score`` replaced by the
     rerank relevance score (clamped to [0, 1]).
+
+    Documents not returned by the reranker get descending negative scores
+    (-0.1, -0.2, ...) so they appear at the bottom but maintain their
+    original relative order. This matches DashScope's behavior when fewer
+    top_n < len(documents).
     """
     text_to_results: Dict[str, List[SearchResult]] = {}
     for result in original_results:
@@ -288,11 +293,16 @@ def _map_reranked_pairs_to_results(
         clamped = max(0.0, min(1.0, float(raw_score)))
         ordered_results.append(original.model_copy(update={"score": clamped}))
 
-    # Append any remaining (un-reranked) results preserving their original
-    # scores. This keeps the result count stable even if the rerank API
-    # returns fewer items than were sent.
+    # Append any remaining (un-reranked) results with descending negative
+    # scores. This keeps them at the bottom but preserves their original
+    # relative order, matching DashScope's fallback behavior.
+    fallback_idx = 0
     for queue in text_to_results.values():
-        ordered_results.extend(queue)
+        for unreranked in queue:
+            fallback_idx += 1
+            ordered_results.append(
+                unreranked.model_copy(update={"score": -(fallback_idx * 0.1)})
+            )
 
     return ordered_results
 
