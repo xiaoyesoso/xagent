@@ -319,6 +319,46 @@ def _apply_rerank_top_k_limit(
     return results
 
 
+def _resolve_dashscope_rerank_from_env() -> Optional[DashscopeRerank]:
+    """Resolve DashscopeRerank purely from environment variables.
+
+    This preserves backward compatibility with deployments that configure
+    rerank via ``DASHSCOPE_RERANK_MODEL`` + ``DASHSCOPE_RERANK_API_KEY``
+    without any per-KB binding. ``_resolve_unified_rerank`` cannot be used
+    here because it requires ``cfg.rerank_model_id`` to be set.
+
+    Returns:
+        DashscopeRerank instance if env vars are configured, None otherwise.
+    """
+    model_id = os.getenv("DASHSCOPE_RERANK_MODEL")
+    api_key = os.getenv("DASHSCOPE_RERANK_API_KEY") or os.getenv("DASHSCOPE_API_KEY")
+    if not model_id or not api_key:
+        return None
+
+    base_url = os.getenv("DASHSCOPE_RERANK_BASE_URL")
+    timeout_env = os.getenv("DASHSCOPE_RERANK_TIMEOUT_SEC")
+    timeout_sec: Optional[float] = None
+    if timeout_env:
+        try:
+            timeout_sec = float(timeout_env)
+        except ValueError:
+            timeout_sec = None
+
+    try:
+        kwargs: Dict[str, Any] = {"model": model_id, "api_key": api_key}
+        if base_url:
+            kwargs["base_url"] = base_url
+        if timeout_sec is not None:
+            kwargs["timeout_sec"] = timeout_sec
+        return DashscopeRerank(**kwargs)
+    except (ValueError, TypeError, ImportError) as exc:
+        logger.warning(
+            "Failed to construct DashscopeRerank from env vars: %s",
+            exc,
+        )
+        return None
+
+
 def _try_dashscope_rerank(
     results: List[SearchResult],
     query_text: str,
@@ -326,6 +366,11 @@ def _try_dashscope_rerank(
     warnings: List[str],
 ) -> Optional[Tuple[List[SearchResult], bool, List[str]]]:
     """Try to rerank results using DashScope rerank API (legacy env config).
+
+    This is the backward-compat path for deployments that configure rerank
+    purely via ``DASHSCOPE_RERANK_MODEL`` + ``DASHSCOPE_RERANK_API_KEY`` env
+    vars (no per-KB binding). The unified hub path is handled separately by
+    ``_try_unified_rerank`` and runs *before* this function.
 
     Args:
         results: Search results to rerank
@@ -336,9 +381,8 @@ def _try_dashscope_rerank(
     Returns:
         Tuple of (reranked_results, used_rerank, warnings) if successful, None otherwise
     """
-    # Use unified resolver but only accept DashscopeRerank type for legacy path
-    rerank_model = _resolve_unified_rerank(cfg)
-    if not isinstance(rerank_model, DashscopeRerank):
+    rerank_model = _resolve_dashscope_rerank_from_env()
+    if rerank_model is None:
         return None
 
     documents = [result.text for result in results]
@@ -492,9 +536,14 @@ def _apply_rerank_if_needed(
     else:
         # Only warn if rerank was attempted but fallback is disabled
         # If rerank is completely disabled (no DashScope and no fallback), no warning needed
-        rerank_model = _resolve_unified_rerank(cfg)
-        if isinstance(rerank_model, DashscopeRerank) or any(
-            r.vector_score is not None or r.fts_score is not None for r in results
+        unified_model = _resolve_unified_rerank(cfg)
+        env_model = _resolve_dashscope_rerank_from_env()
+        if (
+            unified_model is not None
+            or env_model is not None
+            or any(
+                r.vector_score is not None or r.fts_score is not None for r in results
+            )
         ):
             warnings.append("Rerank fallback to LanceDB is disabled")
         logger.debug(
