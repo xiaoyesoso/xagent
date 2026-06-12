@@ -831,6 +831,54 @@ def get_default_embedding_model(user_id: Optional[int] = None) -> Optional[str]:
     return None
 
 
+def get_default_rerank_model(user_id: Optional[int] = None) -> Optional[str]:
+    """Get the default rerank model ID for a specific user.
+
+    Mirrors :func:`get_default_embedding_model` for rerank models. Looks up
+    the user's configured default rerank model from ``UserDefaultModel``
+    and returns the underlying ``Model.model_id`` (string).
+    """
+    from ..models.database import get_db
+    from ..models.model import Model as DBModel
+    from ..models.user import UserDefaultModel, UserModel
+
+    db = next(get_db())
+    try:
+        if user_id:
+            rerank_default = (
+                db.query(UserDefaultModel)
+                .join(DBModel, UserDefaultModel.model_id == DBModel.id)
+                .filter(
+                    UserDefaultModel.user_id == user_id,
+                    UserDefaultModel.config_type == "rerank",
+                    DBModel.is_active,
+                )
+                .first()
+            )
+            if rerank_default and rerank_default.model:
+                if _is_model_visible_to_user(db, rerank_default.model.id, user_id):
+                    return str(rerank_default.model.model_id)
+
+        admin_rerank_defaults = (
+            db.query(UserDefaultModel)
+            .join(UserModel, UserDefaultModel.model_id == UserModel.model_id)
+            .filter(
+                UserDefaultModel.config_type == "rerank",
+                UserModel.is_shared.is_(True),
+                UserDefaultModel.user_id.in_(_get_visible_user_ids(db, user_id)),
+            )
+            .limit(1)
+            .all()
+        )
+        if admin_rerank_defaults:
+            return str(admin_rerank_defaults[0].model.model_id)
+    except Exception:
+        logger.exception("get_default_rerank_model failed")
+    finally:
+        db.close()
+    return None
+
+
 def _get_models_by_category(
     db: Session, ability: str, model_type: str, user_id: Optional[int] = None
 ) -> Dict[str, Any]:

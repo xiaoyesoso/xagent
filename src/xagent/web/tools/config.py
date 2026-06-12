@@ -220,6 +220,7 @@ class WebToolConfig(BaseToolConfig):
         self._cached_tts_model: Optional[Any] = None
         self._cached_mcp_configs: Optional[List[Dict[str, Any]]] = None
         self._cached_embedding_model: Optional[str] = None
+        self._cached_rerank_model: Optional[str] = None
 
     def _build_mcp_file_allowed_dirs(self) -> str:
         """Build comma-separated file roots that local MCP tools may read."""
@@ -334,6 +335,12 @@ class WebToolConfig(BaseToolConfig):
         if self._cached_embedding_model is None:
             self._cached_embedding_model = self._load_embedding_model()
         return self._cached_embedding_model
+
+    def get_rerank_model(self) -> Optional[str]:
+        """Load default rerank model ID from database."""
+        if self._cached_rerank_model is None:
+            self._cached_rerank_model = self._load_rerank_model()
+        return self._cached_rerank_model
 
     def get_browser_tools_enabled(self) -> bool:
         """Whether to include browser automation tools."""
@@ -453,6 +460,12 @@ class WebToolConfig(BaseToolConfig):
         from ...web.services.model_service import get_default_embedding_model
 
         return get_default_embedding_model(self._user_id)
+
+    def _load_rerank_model(self) -> Optional[str]:
+        """Load rerank model ID from database via model service."""
+        from ...web.services.model_service import get_default_rerank_model
+
+        return get_default_rerank_model(self._user_id)
 
     def _load_vision_model(self) -> Optional[Any]:
         """Load vision model from database via model service."""

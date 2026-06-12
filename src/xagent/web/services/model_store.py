@@ -32,6 +32,7 @@ DEFAULT_MODEL_CONFIG_TYPES = [
     "image_edit",
     "asr",
     "tts",
+    "rerank",
 ]
 
 
@@ -319,7 +320,53 @@ class ModelStore:
         config_type: str,
         user_model: UserModel,
     ) -> UserDefaultModel:
-        existing_default = (
+        # Use a single atomic upsert to avoid UNIQUE-constraint races
+        # when the client (e.g. React strict mode, double click) fires
+        # two set_default requests for the same (user_id, config_type)
+        # before either has committed. delete-then-insert is racy
+        # under SQLite because there is no row-level locking.
+        from sqlalchemy.dialects.postgresql import insert as pg_insert
+        from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+
+        bind = self.db.get_bind()
+        dialect = bind.dialect.name if bind is not None else ""
+        stmt: Any = None
+        if dialect == "sqlite":
+            stmt = sqlite_insert(UserDefaultModel).values(
+                user_id=user_id, model_id=model_id, config_type=config_type
+            )
+        elif dialect == "postgresql":
+            stmt = pg_insert(UserDefaultModel).values(
+                user_id=user_id, model_id=model_id, config_type=config_type
+            )
+        if stmt is not None:
+            stmt = stmt.on_conflict_do_update(
+                index_elements=["user_id", "config_type"],
+                set_={"model_id": model_id},
+            )
+            self.db.execute(stmt)
+            self.db.commit()
+        else:
+            # Fallback: delete + insert (kept for any other dialect)
+            existing_default = (
+                self.db.query(UserDefaultModel)
+                .filter(
+                    UserDefaultModel.user_id == user_id,
+                    UserDefaultModel.config_type == config_type,
+                )
+                .first()
+            )
+            if existing_default:
+                self.db.delete(existing_default)
+                self.db.flush()
+            self.db.add(
+                UserDefaultModel(
+                    user_id=user_id, model_id=model_id, config_type=config_type
+                )
+            )
+            self.db.commit()
+
+        user_default = (
             self.db.query(UserDefaultModel)
             .filter(
                 UserDefaultModel.user_id == user_id,
@@ -327,27 +374,9 @@ class ModelStore:
             )
             .first()
         )
-        old_default_was_shared = bool(
-            existing_default
-            and self.model_has_shared_visibility(int(existing_default.model_id))
-        )
         new_default_is_shared = bool(user_model.is_shared)
-
-        if existing_default:
-            self.db.delete(existing_default)
-
-        user_default = UserDefaultModel(
-            user_id=user_id,
-            model_id=model_id,
-            config_type=config_type,
-        )
-        self.db.add(user_default)
-        self.db.commit()
-        self.db.refresh(user_default)
-        invalidate_model_cache(
-            None if old_default_was_shared or new_default_is_shared else user_id
-        )
-        return user_default
+        invalidate_model_cache(None if new_default_is_shared else user_id)
+        return user_default  # type: ignore[return-value]  # Always exists after commit
 
     def delete_user_default_model(
         self, *, user_id: int, config_type: str

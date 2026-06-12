@@ -15,6 +15,7 @@ from xagent.core.model.model import (
     EmbeddingModelConfig,
     ImageModelConfig,
     ModelConfig,
+    RerankModelConfig,
 )
 from xagent.core.model.providers import (
     canonical_provider_name,
@@ -225,6 +226,7 @@ def _is_default_config_type_compatible(model: Any, config_type: str) -> bool:
         "asr": "speech",
         "tts": "speech",
         "speech": "speech",
+        "rerank": "rerank",
     }
 
     expected_category = category_by_config_type.get(config_type)
@@ -339,6 +341,27 @@ async def create_model(
             voice=model.voice,
             format=model.format,
             sample_rate=model.sample_rate,
+        )
+    elif model.category == "rerank":
+        # DashScope rerank has model-family-specific endpoints; let the
+        # adapter derive the correct URL when the form leaves it blank.
+        from xagent.core.model.rerank.dashscope import _default_url_for
+
+        rerank_base_url = base_url
+        if model_provider == "dashscope" and model.model_name:
+            rerank_base_url = _default_url_for(model.model_name)
+
+        config = RerankModelConfig(
+            id=model.model_id,
+            model_name=model.model_name,
+            model_provider=model_provider,
+            base_url=rerank_base_url,
+            api_key=model.api_key or "",
+            timeout=180.0,
+            abilities=model.abilities,
+            description=model.description,
+            top_n=model.top_n,
+            instruct=model.instruct,
         )
     else:
         raise HTTPException(status_code=400, detail="Invalid model category")
@@ -580,6 +603,43 @@ async def test_model_connection(
                 )
             finally:
                 await probe_model.aclose()
+
+        elif request.category == "rerank":
+            from xagent.core.model.rerank.adapter import _create_rerank_model
+            from xagent.core.model.rerank.dashscope import _default_url_for
+
+            # The DashScope rerank endpoint differs between model families
+            # (qwen3-rerank uses the OpenAI-compatible URL, gte-rerank-v2
+            # uses the legacy WebAPI). Derive the URL from the model name
+            # so a stale ``base_url`` from the form cannot break the
+            # connectivity probe.
+            rerank_base_url = base_url
+            if provider == "dashscope" and request.model_name:
+                rerank_base_url = _default_url_for(request.model_name)
+
+            rerank_config = RerankModelConfig(
+                id="test-model",
+                model_provider=provider,
+                model_name=request.model_name,
+                api_key=request.api_key,
+                base_url=rerank_base_url,
+                top_n=request.top_n,
+                instruct=request.instruct,
+            )
+            rerank_model = _create_rerank_model(rerank_config)
+
+            def _probe_rerank() -> list:
+                return list(
+                    rerank_model.compress(
+                        documents=["hello", "world"],
+                        query="hello",
+                    )
+                )
+
+            await asyncio.wait_for(
+                asyncio.to_thread(_probe_rerank),
+                timeout=timeout_seconds,
+            )
 
         else:
             raise ValueError(f"Unsupported category for testing: {request.category}")
@@ -1669,13 +1729,15 @@ async def fetch_provider_models(
     provider: str,
     api_key: str = Body(...),
     base_url: Optional[str] = Body(None),
+    category: Optional[str] = Body(None),
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ) -> dict:
     """Fetch available models from a specific provider.
 
     Requires the provider's API key. For providers like Azure OpenAI,
-    base_url is also required.
+    base_url is also required. When category helps route to the correct fetcher
+    for provider+category combinations (e.g. xinference+rerank).
     """
 
     # Validate provider
@@ -1684,21 +1746,28 @@ async def fetch_provider_models(
         fetch_models_from_provider,
     )
 
-    if provider.lower() not in PROVIDER_FETCHERS:
+    # Try provider+category combination first (e.g. "xinference-rerank"),
+    # then fallback to base provider name
+    combined_key = f"{provider}-{category}" if category else None
+    if combined_key and combined_key in PROVIDER_FETCHERS:
+        provider_to_use = combined_key
+    elif provider.lower() not in PROVIDER_FETCHERS:
         raise HTTPException(
             status_code=400,
             detail=f"Unsupported provider: {provider}. Supported providers: {list(PROVIDER_FETCHERS.keys())}",
         )
+    else:
+        provider_to_use = provider.lower()
 
     # For Azure OpenAI, base_url is required
-    if provider.lower() == "azure_openai" and not base_url:
+    if provider_to_use == "azure_openai" and not base_url:
         raise HTTPException(
             status_code=400,
             detail="base_url is required for Azure OpenAI provider",
         )
 
     try:
-        models = await fetch_models_from_provider(provider, api_key, base_url)
+        models = await fetch_models_from_provider(provider_to_use, api_key, base_url)
 
         return {
             "provider": provider,

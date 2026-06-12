@@ -53,6 +53,10 @@ class KnowledgeSearchArgs(BaseModel):
     embedding_model_id: Optional[str] = Field(
         default=None, description="Optional embedding model ID to use for searches"
     )
+    rerank_model_id: Optional[str] = Field(
+        default=None,
+        description="Optional rerank model ID (registered in model hub) to rerank search results",
+    )
     allowed_collections: Optional[List[str]] = Field(
         default=None,
         description="Optional list of allowed collection names. Used as default when collections is empty.",
@@ -282,8 +286,8 @@ async def _search_knowledge_base_impl(
             collections_to_iterate = collections_result.collections
             logger.info("Searching all collections")
 
-        # Build search config
-        search_config = {
+        # Build base search config (per-collection overrides happen below)
+        base_search_config = {
             "search_type": tool_args.search_type,
             "top_k": tool_args.top_k,
             "min_score": tool_args.min_score,
@@ -291,7 +295,7 @@ async def _search_knowledge_base_impl(
         }
 
         if tool_args.embedding_model_id:
-            search_config["embedding_model_id"] = tool_args.embedding_model_id
+            base_search_config["embedding_model_id"] = tool_args.embedding_model_id
 
         # Search across collections and aggregate results
         all_results = []
@@ -308,6 +312,15 @@ async def _search_knowledge_base_impl(
                     f"Skipping collection with no embeddings: {collection_name}"
                 )
                 continue
+
+            # Per-KB rerank resolution: explicit tool arg wins, otherwise
+            # use the collection's bound rerank_model_id; when neither is
+            # set, no rerank stage is added for this collection.
+            search_config = dict(base_search_config)
+            collection_rerank = getattr(collection_info, "rerank_model_id", None)
+            effective_rerank = tool_args.rerank_model_id or collection_rerank
+            if effective_rerank:
+                search_config["rerank_model_id"] = effective_rerank
 
             try:
                 logger.info(

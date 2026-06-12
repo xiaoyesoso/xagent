@@ -50,6 +50,10 @@ async def _create_knowledge_tools_impl(config: "BaseToolConfig") -> List[Any]:
             )
             tools.append(list_tool)
 
+        # NOTE: Do not inject the user's default rerank model here.
+        # rerank is per-KB: the search pipeline only reranks when the
+        # KB it is querying has rerank_model_id configured in its
+        # collection metadata.
         knowledge_tool = get_knowledge_search_tool(
             allowed_collections=allowed_collections,
             user_id=user_id,

@@ -3569,6 +3569,91 @@ async def save_collection_config(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@kb_router.patch(
+    "/collections/{collection}/rerank-model",
+    response_model=CollectionOperationResult,
+)
+@handle_kb_exceptions
+async def set_collection_rerank_model(
+    collection: str,
+    rerank_model_id: Optional[str] = Body(
+        None,
+        embed=True,
+        description=(
+            "Rerank model ID registered in the model hub. Pass null or an "
+            "empty string to clear the binding (search will no longer rerank "
+            "for this collection)."
+        ),
+    ),
+    _user: User = Depends(get_current_user),
+) -> CollectionOperationResult:
+    """Bind or clear the rerank model for a collection.
+
+    When set, ``knowledge_search`` adds a rerank stage for this KB using
+    the configured model. When cleared, no rerank is performed.
+
+    The rerank binding is user-scoped and stored in ``collection_config``,
+    so different users can have different rerank settings for the same
+    collection name.
+    """
+    try:
+        safe_collection = sanitize_path_component(collection, "collection")
+    except ValueError as e:
+        raise HTTPException(
+            status_code=422, detail=f"Invalid collection name: {str(e)}"
+        ) from e
+
+    await _ensure_collection_access(safe_collection, _user, hide_missing=False)
+
+    normalized = (rerank_model_id or "").strip() or None
+
+    try:
+        from xagent.core.tools.core.RAG_tools.core.schemas import IngestionConfig
+        from xagent.core.tools.core.RAG_tools.storage.factory import (
+            get_metadata_store,
+        )
+
+        metadata_store = get_metadata_store()
+
+        # Load existing config for this user or start fresh
+        config_json = await metadata_store.get_collection_config(
+            collection=safe_collection,
+            user_id=int(_user.id),
+        )
+        if config_json:
+            config_dict = json.loads(config_json)
+            config = IngestionConfig(**config_dict)
+        else:
+            config = IngestionConfig()
+
+        # Update only the rerank_model_id field, preserving all other settings
+        updated = config.model_copy(update={"rerank_model_id": normalized})
+        await metadata_store.save_collection_config(
+            collection=safe_collection,
+            config_json=updated.model_dump_json(),
+            user_id=int(_user.id),
+        )
+    except Exception as e:
+        logger.error(
+            "Failed to set rerank model for collection %s: %s",
+            safe_collection,
+            e,
+            exc_info=True,
+        )
+        raise HTTPException(status_code=500, detail=str(e))
+
+    return CollectionOperationResult(
+        status="success",
+        collection=safe_collection,
+        operation="set_rerank_model",
+        message=(
+            f"Rerank model cleared for collection '{safe_collection}'"
+            if normalized is None
+            else f"Rerank model set to '{normalized}' for collection '{safe_collection}'"
+        ),
+    )
+
+
 @kb_router.post(
     "/ingest",
     response_model=IngestionResult,

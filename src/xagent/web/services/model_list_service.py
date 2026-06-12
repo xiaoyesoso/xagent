@@ -114,6 +114,55 @@ async def fetch_xinference_models(
     return await XinferenceLLM.list_available_models(base_url=base_url, api_key=api_key)
 
 
+async def fetch_xinference_rerank_models(
+    api_key: str, base_url: Optional[str] = None
+) -> List[Dict[str, Any]]:
+    """Fetch available rerank models from a Xinference server.
+
+    Args:
+        api_key: Xinference API key (optional)
+        base_url: Xinference server base URL (required)
+
+    Returns:
+        List of available rerank models on the server, shaped as
+        ``{"id", "model_uid", ...}`` (see ``XinferenceRerank.list_available_models``).
+    """
+    if not base_url:
+        raise ValueError("base_url is required for Xinference rerank")
+
+    from ...core.model.rerank.xinference import XinferenceRerank
+
+    return XinferenceRerank.list_available_models(base_url=base_url, api_key=api_key)
+
+
+async def fetch_dashscope_rerank_models(
+    api_key: str, base_url: Optional[str] = None
+) -> List[Dict[str, Any]]:
+    """Return curated DashScope rerank models.
+
+    DashScope's OpenAI-compatible model list endpoint does NOT expose rerank
+    models, so we cannot reuse ``fetch_openai_models`` here. The rerank
+    families currently supported by ``DashscopeRerank`` are documented in
+    ``NEW_FORMAT_MODELS`` / ``OLD_FORMAT_MODELS`` in
+    ``xagent.core.model.rerank.dashscope``; we expose them as a static curated
+    list so the UI can preselect a known-good model.
+    """
+    _ = api_key, base_url
+
+    from ...core.model.rerank.dashscope import NEW_FORMAT_MODELS, OLD_FORMAT_MODELS
+
+    models: List[Dict[str, Any]] = []
+    for model_id in sorted(NEW_FORMAT_MODELS | OLD_FORMAT_MODELS):
+        models.append(
+            {
+                "id": model_id,
+                "object": "model",
+                "owned_by": "dashscope",
+            }
+        )
+    return models
+
+
 async def fetch_alibaba_coding_plan_models(
     api_key: str, base_url: Optional[str] = None
 ) -> List[Dict[str, Any]]:
@@ -176,6 +225,8 @@ PROVIDER_FETCHERS: Dict[str, Any] = {
     "gemini": fetch_gemini_models,
     "google": fetch_gemini_models,
     "xinference": fetch_xinference_models,
+    "xinference-rerank": fetch_xinference_rerank_models,
+    "dashscope-rerank": fetch_dashscope_rerank_models,
     "zai-coding-plan": fetch_openai_models,
     "zhipuai-coding-plan": fetch_openai_models,
     "alibaba-coding-plan": fetch_alibaba_coding_plan_models,

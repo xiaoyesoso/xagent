@@ -57,6 +57,19 @@ def _validate_abilities_for_category(abilities: List[str], category: str) -> Lis
 
         if not abilities:
             raise ValueError("Speech model must have at least one ability")
+    elif category == "rerank":
+        # Rerank models can only have "rerank" ability
+        valid_rerank_abilities: Set[str] = {"rerank"}
+        invalid_abilities = set(abilities) - valid_rerank_abilities
+
+        if invalid_abilities:
+            raise ValueError(
+                f"Invalid abilities for rerank model: {invalid_abilities}. "
+                f"Valid abilities are: {valid_rerank_abilities}"
+            )
+
+        if not abilities:
+            raise ValueError("Rerank model must have at least one ability")
 
     return abilities
 
@@ -75,6 +88,9 @@ class ModelCreate(BaseModel):
     abilities: Optional[List[str]] = None
     description: Optional[str] = None
     share_with_users: bool = False  # Admin only: share this model with all users
+    # Rerank-specific parameters
+    top_n: Optional[int] = None
+    instruct: Optional[str] = None
     # Speech-specific parameters (for ASR and TTS)
     language: Optional[str] = None  # Default language code (e.g., 'zh', 'en')
     voice: Optional[str] = None  # TTS voice/speaker (e.g., 'female', 'male')
@@ -207,6 +223,8 @@ class ModelConnectionTestRequest(BaseModel):
     temperature: Optional[float] = None
     dimension: Optional[int] = None
     abilities: Optional[List[str]] = None
+    top_n: Optional[int] = None
+    instruct: Optional[str] = None
 
 
 class UserDefaultModelCreate(BaseModel):
@@ -229,6 +247,7 @@ class UserDefaultModelCreate(BaseModel):
             "asr",
             "tts",
             "speech",
+            "rerank",
         }
         if v not in valid_types:
             raise ValueError(

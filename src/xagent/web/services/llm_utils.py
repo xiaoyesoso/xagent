@@ -54,6 +54,8 @@ def _create_llm_instance(db_model: Model) -> BaseLLM:
         config = RerankModelConfig(
             id=db_model.model_id,
             model_name=db_model.model_name,
+            model_provider=getattr(db_model, "model_provider", "dashscope")
+            or "dashscope",
             api_key=db_model.api_key,
             base_url=db_model.base_url,
             abilities=db_model.abilities,
@@ -115,7 +117,10 @@ class CoreStorage:
                 dimension=db_model.dimension,
             )
         elif db_model.category == "rerank":
-            return RerankModelConfig(**common)
+            return RerankModelConfig(
+                **common,
+                model_provider=db_model.model_provider,
+            )
         elif db_model.category == "speech":
             from ...core.model.model import SpeechModelConfig
 
@@ -172,7 +177,7 @@ class CoreStorage:
         elif isinstance(model, RerankModelConfig):
             db_data.update(
                 {
-                    "model_provider": "none",
+                    "model_provider": model.model_provider,
                     "category": "rerank",
                 }
             )

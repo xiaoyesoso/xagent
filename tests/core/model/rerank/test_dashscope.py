@@ -210,3 +210,88 @@ class TestDashscopeRerank:
 
         with pytest.raises(KeyError):
             client.compress(["Doc"], "Query")
+
+
+class TestDashscopeRerankEndpointRouting:
+    """Default endpoint selection by model name.
+
+    qwen3-rerank uses the OpenAI-compatible endpoint
+    (``/compatible-api/v1/reranks``); gte-rerank-v2 and qwen3-vl-rerank
+    use the legacy WebAPI endpoint.
+    """
+
+    def test_qwen3_rerank_uses_compatible_url(self):
+        client = DashscopeRerank(model="qwen3-rerank", api_key="k")
+        assert client.url == "https://dashscope.aliyuncs.com/compatible-api/v1/reranks"
+        assert client.is_new_format is True
+
+    def test_gte_rerank_v2_uses_legacy_url(self):
+        client = DashscopeRerank(model="gte-rerank-v2", api_key="k")
+        assert (
+            client.url
+            == "https://dashscope.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank"
+        )
+        assert client.is_new_format is False
+
+    def test_qwen3_vl_rerank_uses_legacy_url(self):
+        client = DashscopeRerank(model="qwen3-vl-rerank", api_key="k")
+        assert (
+            client.url
+            == "https://dashscope.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank"
+        )
+        assert client.is_new_format is False
+
+    def test_unknown_model_falls_back_to_legacy_url(self):
+        client = DashscopeRerank(model="some-future-model", api_key="k")
+        assert (
+            client.url
+            == "https://dashscope.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank"
+        )
+        assert client.is_new_format is False
+
+    def test_explicit_base_url_overrides_default(self):
+        client = DashscopeRerank(
+            model="qwen3-rerank", api_key="k", base_url="https://custom.example/rerank"
+        )
+        assert client.url == "https://custom.example/rerank"
+
+    def test_model_name_is_case_insensitive_for_routing(self):
+        client = DashscopeRerank(model="QWEN3-RERANK", api_key="k")
+        assert client.url == "https://dashscope.aliyuncs.com/compatible-api/v1/reranks"
+        assert client.is_new_format is True
+
+    @patch("requests.post")
+    def test_qwen3_rerank_uses_compatible_url_in_request(self, mock_post):
+        """End-to-end: the new model is called on /compatible-api/v1/reranks."""
+        mock_response = Mock()
+        mock_response.raise_for_status.return_value = None
+        mock_response.json.return_value = {
+            "results": [
+                {"index": 0, "relevance_score": 0.9},
+                {"index": 1, "relevance_score": 0.1},
+            ]
+        }
+        mock_post.return_value = mock_response
+
+        client = DashscopeRerank(api_key="k", model="qwen3-rerank")
+        result = client.compress(["a", "b"], "q")
+
+        # URL
+        assert mock_post.call_args.args[0] == (
+            "https://dashscope.aliyuncs.com/compatible-api/v1/reranks"
+        )
+        # New payload shape
+        payload = mock_post.call_args.kwargs["json"]
+        assert payload["query"] == "q"
+        assert payload["documents"] == ["a", "b"]
+        assert "input" not in payload
+        assert "parameters" not in payload
+        # Result mapping
+        assert result == ["a", "b"]
+
+    @patch("requests.post")
+    def test_empty_documents_skips_request(self, mock_post):
+        client = DashscopeRerank(api_key="k", model="qwen3-rerank")
+        result = client.compress([], "q")
+        assert result == []
+        mock_post.assert_not_called()

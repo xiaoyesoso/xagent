@@ -149,11 +149,12 @@ const LOCAL_PROVIDER_CONFIGS: Record<string, Partial<ProviderConfig>> = {
   },
   dashscope: {
     icon: <img src="/dashscope.png" alt="DashScope" className="w-6 h-6" />,
-    category: ["llm", "embedding", "image"],
+    category: ["llm", "embedding", "image", "rerank"],
     defaultBaseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1",
     categoryBaseUrls: {
       embedding: "https://dashscope.aliyuncs.com/api/v1/services/embeddings/text-embedding/text-embedding",
-      image: "https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation"
+      image: "https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation",
+      rerank: "https://dashscope.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank"
     }
   },
   gemini: {
@@ -168,7 +169,7 @@ const LOCAL_PROVIDER_CONFIGS: Record<string, Partial<ProviderConfig>> = {
   },
   xinference: {
     icon: <img src="/xagent_logo.png" alt="Xinference" className="w-6 h-6" />,
-    category: ["llm", "embedding", "image", "speech"],
+    category: ["llm", "embedding", "image", "speech", "rerank"],
     defaultBaseUrl: "http://localhost:9997",
   },
   ollama: {
@@ -290,6 +291,7 @@ export function ModelsPage() {
     return {
       llm: models.filter(m => m.category === 'llm').length,
       embedding: models.filter(m => m.category === 'embedding').length,
+      rerank: models.filter(m => m.category === 'rerank').length,
       image: models.filter(m => m.category === 'image').length,
       speech: models.filter(m => m.category === 'speech').length
     }
@@ -401,6 +403,12 @@ export function ModelsPage() {
               {t('models.tabs.embedding')} <Badge variant="secondary" className="ml-2 rounded-full px-2 py-0.5 bg-slate-100 text-slate-600 hover:bg-slate-100 border-none font-normal">{modelCounts.embedding}</Badge>
             </TabsTrigger>
             <TabsTrigger
+              value="rerank"
+              className="data-[state=active]:border-primary data-[state=active]:text-primary data-[state=active]:bg-transparent border border-transparent rounded-md px-4 py-2 shadow-none data-[state=active]:shadow-none text-slate-700 font-normal"
+            >
+              {t('models.tabs.rerank')} <Badge variant="secondary" className="ml-2 rounded-full px-2 py-0.5 bg-slate-100 text-slate-600 hover:bg-slate-100 border-none font-normal">{modelCounts.rerank}</Badge>
+            </TabsTrigger>
+            <TabsTrigger
               value="image"
               className="data-[state=active]:border-primary data-[state=active]:text-primary data-[state=active]:bg-transparent border border-transparent rounded-md px-4 py-2 shadow-none data-[state=active]:shadow-none text-slate-700 font-normal"
             >
@@ -428,7 +436,9 @@ export function ModelsPage() {
 
             <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6">
               {Object.entries(enabledProviders).map(([providerId, providerModels]) => {
-                const providerConfig = providers.find(p => p.id === providerId) || {
+                const knownConfig = providers.find(p => p.id === providerId)
+                const hasKnownProvider = knownConfig !== undefined
+                const providerConfig = knownConfig || {
                   id: providerId,
                   name: providerId.charAt(0).toUpperCase() + providerId.slice(1),
                   description: "",
@@ -437,6 +447,12 @@ export function ModelsPage() {
                   defaultBaseUrl: "",
                   models: [],
                 }
+                // Surface a real model label for the unknown-provider fallback
+                // so a stale or unrecognized provider id does not render
+                // as a bare "None" card.
+                const fallbackName = providerModels[0]?.model_name
+                  ? providerModels[0].model_name
+                  : providerConfig.name
 
                 // Gather unique abilities across all models in this provider
                 const allAbilities = new Set<string>()
@@ -480,7 +496,7 @@ export function ModelsPage() {
                           <div className="p-2 bg-muted rounded-lg shrink-0">
                             {providerConfig.icon}
                           </div>
-                          <h3 className="font-semibold text-lg">{providerConfig.name}</h3>
+                          <h3 className="font-semibold text-lg">{hasKnownProvider ? providerConfig.name : fallbackName}</h3>
                         </div>
                       </div>
 

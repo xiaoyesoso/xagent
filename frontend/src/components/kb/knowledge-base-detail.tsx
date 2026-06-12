@@ -230,6 +230,7 @@ export function KnowledgeBaseDetailContent({ collectionName }: { collectionName:
   // Embedding models state
   const [embeddingModels, setEmbeddingModels] = useState<any[]>([])
   const [defaultEmbeddingModel, setDefaultEmbeddingModel] = useState<string | null>(null)
+  const [rerankModels, setRerankModels] = useState<any[]>([])
 
   // Ingestion configuration
   const [ingestionConfig, setIngestionConfig] = useState<IngestionConfig>({
@@ -245,6 +246,10 @@ export function KnowledgeBaseDetailContent({ collectionName }: { collectionName:
   })
   const [isSavingConfig, setIsSavingConfig] = useState(false)
 
+  // Per-KB rerank model binding (independent of ingestion config but
+  // persisted together with it via handleSaveConfig).
+  const [collectionRerankModelId, setCollectionRerankModelId] = useState<string>("")
+
   // Search states
   const [searchQuery, setSearchQuery] = useState("")
   const [searchResults, setSearchResults] = useState<SearchResult[]>([])
@@ -259,6 +264,7 @@ export function KnowledgeBaseDetailContent({ collectionName }: { collectionName:
   useEffect(() => {
     fetchCollectionInfo()
     fetchEmbeddingModels()
+    fetchRerankModels()
   }, [collectionName])
 
   useEffect(() => {
@@ -335,6 +341,19 @@ export function KnowledgeBaseDetailContent({ collectionName }: { collectionName:
     }
   }
 
+  const fetchRerankModels = async () => {
+    try {
+      const response = await apiRequest(`${getApiUrl()}/api/models/?category=rerank`)
+      if (!response.ok) {
+        throw new Error("Failed to fetch rerank models")
+      }
+      const models = (await response.json()) || []
+      setRerankModels(models)
+    } catch (err) {
+      console.error("Failed to fetch rerank models:", err)
+    }
+  }
+
   const fetchCollectionInfo = async () => {
     try {
       setLoading(true)
@@ -352,6 +371,9 @@ export function KnowledgeBaseDetailContent({ collectionName }: { collectionName:
       }
 
       setCollectionInfo(collection)
+
+      // Sync per-KB rerank model binding
+      setCollectionRerankModelId(collection.rerank_model_id || "")
 
       // Update ingestion config if saved in backend
       if (collection.ingestion_config) {
@@ -831,6 +853,24 @@ export function KnowledgeBaseDetailContent({ collectionName }: { collectionName:
         throw new Error(errorData.detail || t("kb.detail.errors.saveConfigFailed"))
       }
 
+      // Persist per-KB rerank model binding in the same save action so the
+      // user has a single "save" button covering both ingestion settings
+      // and rerank model selection.
+      const rerankResp = await apiRequest(
+        `${getApiUrl()}/api/kb/collections/${encodeURIComponent(collectionName)}/rerank-model`,
+        {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            rerank_model_id: collectionRerankModelId || null,
+          }),
+        },
+      )
+      if (!rerankResp.ok) {
+        const errorData = await rerankResp.json().catch(() => ({}))
+        throw new Error(errorData.detail || t("kb.detail.errors.saveConfigFailed"))
+      }
+
       toast.success(t("kb.detail.success.configSaved"))
 
       // Refresh info to ensure we're in sync
@@ -1006,11 +1046,16 @@ export function KnowledgeBaseDetailContent({ collectionName }: { collectionName:
                 </div>
                 <div>
                   <Label htmlFor="rerank_model_id">{t("kb.detail.search.rerankModelIdLabel")}</Label>
-                  <Input
-                    id="rerank_model_id"
+                  <Select
                     value={searchConfig.rerank_model_id}
-                    onChange={(e) => setSearchConfig(prev => ({ ...prev, rerank_model_id: e.target.value }))}
-                    placeholder={t("kb.detail.search.rerankPlaceholder")}
+                    onValueChange={(value) => setSearchConfig(prev => ({ ...prev, rerank_model_id: value }))}
+                    options={[
+                      { value: "", label: t("kb.detail.search.rerankPlaceholder") || "(none)" },
+                      ...rerankModels.map((model) => ({
+                        value: model.model_id,
+                        label: model.model_name || model.name || model.model_id,
+                      })),
+                    ]}
                   />
                 </div>
               </div>
@@ -1170,6 +1215,22 @@ export function KnowledgeBaseDetailContent({ collectionName }: { collectionName:
                     value={ingestionConfig.embedding_batch_size}
                     onChange={(e) => setIngestionConfig(prev => ({ ...prev, embedding_batch_size: parseInt(e.target.value) || 10 }))}
                   />
+                </div>
+
+                <div>
+                  <Label htmlFor="rerank_model_id_settings">{t("kb.index.rerankModelId")}</Label>
+                  <Select
+                    value={collectionRerankModelId}
+                    onValueChange={(value) => setCollectionRerankModelId(value)}
+                    options={[
+                      { value: "", label: t("kb.detail.search.rerankPlaceholder") || "(none)" },
+                      ...rerankModels.map((model) => ({
+                        value: model.model_id,
+                        label: model.model_name || model.name || model.model_id,
+                      })),
+                    ]}
+                  />
+                  <p className="text-xs text-muted-foreground mt-1">{t("kb.index.rerankModelHint")}</p>
                 </div>
               </div>
 

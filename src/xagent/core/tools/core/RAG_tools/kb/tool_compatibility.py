@@ -125,6 +125,7 @@ class KBToolCompatibilityFacade:
     def get_knowledge_search_tool(
         self,
         embedding_model_id: Optional[str] = None,
+        rerank_model_id: Optional[str] = None,
         allowed_collections: Optional[list[str]] = None,
         user_id: Optional[int] = None,
         is_admin: bool = False,
@@ -133,6 +134,7 @@ class KBToolCompatibilityFacade:
 
         return vibe_document_search._get_knowledge_search_tool_impl(
             embedding_model_id=embedding_model_id,
+            rerank_model_id=rerank_model_id,
             allowed_collections=allowed_collections,
             user_id=user_id,
             is_admin=is_admin,

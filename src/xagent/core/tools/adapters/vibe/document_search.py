@@ -118,12 +118,14 @@ class KnowledgeSearchTool(AbstractBaseTool):
     def __init__(
         self,
         embedding_model_id: str | None = None,
+        rerank_model_id: str | None = None,
         allowed_collections: Optional[list[str]] = None,
         user_id: Optional[int] = None,
         is_admin: bool = False,
     ) -> None:
         self._visibility = ToolVisibility.PUBLIC
         self.embedding_model_id = embedding_model_id
+        self.rerank_model_id = rerank_model_id
         self.allowed_collections = allowed_collections
         self.user_id = user_id
         self.is_admin = is_admin
@@ -162,6 +164,8 @@ class KnowledgeSearchTool(AbstractBaseTool):
         args = dict(args)
         if self.embedding_model_id:
             args.setdefault("embedding_model_id", self.embedding_model_id)
+        if self.rerank_model_id:
+            args.setdefault("rerank_model_id", self.rerank_model_id)
         if self.allowed_collections is not None:
             args.setdefault("allowed_collections", self.allowed_collections)
 
@@ -179,6 +183,7 @@ class KnowledgeSearchTool(AbstractBaseTool):
 
 def get_knowledge_search_tool(
     embedding_model_id: Optional[str] = None,
+    rerank_model_id: Optional[str] = None,
     allowed_collections: Optional[list[str]] = None,
     user_id: Optional[int] = None,
     is_admin: bool = False,
@@ -186,6 +191,7 @@ def get_knowledge_search_tool(
     """Create a knowledge base search tool through the tool facade."""
     return _get_tool_compatibility_facade().get_knowledge_search_tool(
         embedding_model_id=embedding_model_id,
+        rerank_model_id=rerank_model_id,
         allowed_collections=allowed_collections,
         user_id=user_id,
         is_admin=is_admin,
@@ -194,6 +200,7 @@ def get_knowledge_search_tool(
 
 def _get_knowledge_search_tool_impl(
     embedding_model_id: Optional[str] = None,
+    rerank_model_id: Optional[str] = None,
     allowed_collections: Optional[list[str]] = None,
     user_id: Optional[int] = None,
     is_admin: bool = False,
@@ -202,6 +209,7 @@ def _get_knowledge_search_tool_impl(
 
     Args:
         embedding_model_id: Optional embedding model ID to use for searches.
+        rerank_model_id: Optional rerank model ID (from model hub) to rerank results.
         allowed_collections: Optional list of allowed collection names. Used as default when collections is not specified.
         user_id: Optional user ID for multi-tenancy filtering.
         is_admin: Whether the user has admin privileges.
@@ -211,6 +219,7 @@ def _get_knowledge_search_tool_impl(
     """
     return KnowledgeSearchTool(
         embedding_model_id=embedding_model_id,
+        rerank_model_id=rerank_model_id,
         allowed_collections=allowed_collections,
         user_id=user_id,
         is_admin=is_admin,

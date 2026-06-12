@@ -54,6 +54,7 @@ class EmbeddingModelConfig(ModelConfig):
 
 
 class RerankModelConfig(ModelConfig):
+    model_provider: str = "dashscope"  # dashscope, xinference, etc.
     top_n: Optional[int] = None
     instruct: Optional[str] = None
 
