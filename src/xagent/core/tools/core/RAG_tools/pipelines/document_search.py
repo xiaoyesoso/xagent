@@ -327,29 +327,45 @@ def _resolve_dashscope_rerank_from_env() -> Optional[DashscopeRerank]:
     without any per-KB binding. ``_resolve_unified_rerank`` cannot be used
     here because it requires ``cfg.rerank_model_id`` to be set.
 
+    Honors the legacy env knobs:
+
+    * ``DASHSCOPE_RERANK_ENABLED``: if set to a falsy value (``false``/``0``/
+      ``no``), env-based rerank is disabled even when model + key are present.
+    * ``DASHSCOPE_RERANK_MODEL``: required, model name.
+    * ``DASHSCOPE_RERANK_API_KEY`` (falls back to ``DASHSCOPE_API_KEY``):
+      required, API key.
+    * ``DASHSCOPE_RERANK_BASE_URL``: optional override for the API endpoint.
+    * ``DASHSCOPE_RERANK_TOP_N``: optional ``top_n`` passed to the rerank
+      adapter.
+
     Returns:
         DashscopeRerank instance if env vars are configured, None otherwise.
     """
+    enabled_env = os.getenv("DASHSCOPE_RERANK_ENABLED")
+    if enabled_env is not None and enabled_env.lower() in ("false", "0", "no"):
+        return None
+
     model_id = os.getenv("DASHSCOPE_RERANK_MODEL")
     api_key = os.getenv("DASHSCOPE_RERANK_API_KEY") or os.getenv("DASHSCOPE_API_KEY")
     if not model_id or not api_key:
         return None
 
     base_url = os.getenv("DASHSCOPE_RERANK_BASE_URL")
-    timeout_env = os.getenv("DASHSCOPE_RERANK_TIMEOUT_SEC")
-    timeout_sec: Optional[float] = None
-    if timeout_env:
+
+    top_n: Optional[int] = None
+    top_n_env = os.getenv("DASHSCOPE_RERANK_TOP_N")
+    if top_n_env:
         try:
-            timeout_sec = float(timeout_env)
+            top_n = int(top_n_env)
         except ValueError:
-            timeout_sec = None
+            top_n = None
 
     try:
         kwargs: Dict[str, Any] = {"model": model_id, "api_key": api_key}
         if base_url:
             kwargs["base_url"] = base_url
-        if timeout_sec is not None:
-            kwargs["timeout_sec"] = timeout_sec
+        if top_n is not None:
+            kwargs["top_n"] = top_n
         return DashscopeRerank(**kwargs)
     except (ValueError, TypeError, ImportError) as exc:
         logger.warning(
