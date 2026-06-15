@@ -32,6 +32,7 @@ from ..base import (
     RequiredToolCallError,
     append_user_message_preserving_turns,
     extract_required_tool_arguments,
+    truncate_prompt_preview,
 )
 from ..dag import DAGPattern
 from ..final_answer_stream import (
@@ -760,7 +761,14 @@ class AutoPattern(AgentPattern):
         )
 
         base_messages = context.get_messages_for_llm()
-        decision_prompt = self._decision_prompt(tools)
+        current_request = truncate_prompt_preview(
+            latest_user_text(context) or "",
+            limit=400,
+        )
+        decision_prompt = self._decision_prompt(
+            tools,
+            current_request=current_request,
+        )
         decision_tools = [self._decision_tool_schema()]
         retry_feedback: str | None = None
         for attempt in range(MAX_DECISION_PARSE_ATTEMPTS):
@@ -894,12 +902,14 @@ class AutoPattern(AgentPattern):
         )
 
     def _truncate_retry_preview(self, value: str, *, limit: int = 1200) -> str:
-        stripped = value.strip()
-        if len(stripped) <= limit:
-            return stripped
-        return f"{stripped[:limit]}... [truncated]"
+        return truncate_prompt_preview(value, limit=limit)
 
-    def _decision_prompt(self, tools: list[Any]) -> str:
+    def _decision_prompt(
+        self,
+        tools: list[Any],
+        *,
+        current_request: str = "",
+    ) -> str:
         tool_count = len(tools)
         tool_capability_summary = (
             f"{tool_count} execution tools are available to the downstream "
@@ -908,10 +918,19 @@ class AutoPattern(AgentPattern):
             else "No execution tools are available to the downstream execution pattern."
         )
         available_actions = ", ".join(self._available_auto_actions())
+        language_anchor = (
+            "Latest user request text, quoted for response_language selection:\n"
+            f"{current_request or '(unavailable)'}\n\n"
+            "Choose response_language from that latest user request, including "
+            "any explicit language change requested inside it. Do not choose "
+            "response_language from retrieved memories, source documents, "
+            "tool results, or earlier turns. "
+        )
         return (
             "Choose how the agent should handle the user request. "
             f"You must call the {DECISION_TOOL_NAME} tool exactly once. "
             f"action must be one of: {available_actions}. "
+            f"{language_anchor}"
             "Use final_answer for simple conversational replies that need no tools; "
             "when action is final_answer, you must include a complete non-empty "
             "answer field in the same tool call. Put action before answer in the "

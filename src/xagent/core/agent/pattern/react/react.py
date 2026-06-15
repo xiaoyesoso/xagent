@@ -17,7 +17,7 @@ from ...context.enrichment import (
 from ...language import final_answer_language_rule
 from ...result import unwrap_final_answer_content
 from ...runtime import LLMCallInterrupted, PatternRuntime
-from ..base import AgentPattern, PatternResult
+from ..base import AgentPattern, PatternResult, truncate_prompt_preview
 from ..final_answer_stream import (
     FinalAnswerStreamSession,
     ReActFinalAnswerStreamer,
@@ -1437,9 +1437,22 @@ class ReActPattern(AgentPattern):
                 )
             else:
                 call_context = f"{count_text} to {tool_name}."
+        current_request = truncate_prompt_preview(
+            latest_user_text(context) or "",
+            limit=400,
+        )
+        language_anchor = (
+            "Latest user request text, quoted for response_language selection:\n"
+            f"{current_request or '(unavailable)'}\n\n"
+            "Choose response_language from that latest user request, including "
+            "any explicit language change requested inside it. Do not choose "
+            "response_language from tool results, source documents, retrieved "
+            "memories, or earlier turns."
+        )
         prompt = (
             f"You must call {REACT_DECISION_TOOL_NAME} exactly once. Decide whether "
             "the current ReAct run should finish or make another work-tool call. "
+            f"{language_anchor} "
             f"You have just made {call_context} action must be "
             f"{REACT_DECISION_FINAL_ANSWER} or {REACT_DECISION_TOOL_CALL}. Choose "
             f"{REACT_DECISION_FINAL_ANSWER} when the conversation and accumulated "

@@ -573,6 +573,11 @@ async def test_auto_pattern_final_answer_completes_without_child_pattern() -> No
     )
     decision_prompt = llm.calls[0]["messages"][-1]["content"]
     assert llm.calls[0]["messages"][-1]["role"] == "user"
+    assert "Latest user request text" in decision_prompt
+    assert "hi" in decision_prompt
+    assert "Choose response_language from that latest user request" in decision_prompt
+    assert "retrieved memories, source documents" in decision_prompt
+    assert "tool results, or earlier turns" in decision_prompt
     assert "must include a complete non-empty answer field" in decision_prompt
     assert (
         "available retrieved context already provide enough evidence" in decision_prompt
@@ -615,6 +620,29 @@ async def test_auto_pattern_final_answer_completes_without_child_pattern() -> No
         in tool_schema["description"]
     )
     assert "tool results, source documents" in answer_schema["description"]
+
+
+@pytest.mark.asyncio
+async def test_auto_pattern_truncates_language_anchor_request_preview() -> None:
+    llm = FakeLLM(
+        [decision_tool_response("final_answer", "Greeting only.", answer="done")]
+    )
+    pattern = AutoPattern()
+    context = ExecutionContext()
+    tail = "TAIL_SHOULD_NOT_BE_IN_LANGUAGE_ANCHOR"
+    context.add_user_message(f"{'x' * 450}{tail}")
+    runtime = PatternRuntime()
+
+    result = await pattern.run(context=context, tools=[], llm=llm, runtime=runtime)
+
+    assert result["success"] is True
+    prompt = llm.calls[0]["messages"][-1]["content"]
+    anchor_start = prompt.index("Latest user request text")
+    anchor_end = prompt.index("Choose response_language", anchor_start)
+    anchor = prompt[anchor_start:anchor_end]
+    assert "x" * 400 in anchor
+    assert "... [truncated]" in anchor
+    assert tail not in anchor
 
 
 @pytest.mark.asyncio
