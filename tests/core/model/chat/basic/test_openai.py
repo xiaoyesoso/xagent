@@ -502,6 +502,44 @@ class TestOpenAILLM:
             await llm.chat([{"role": "user", "content": "Hello"}])
 
     @pytest.mark.asyncio
+    async def test_finish_reason_stop_with_only_reasoning_still_raises(
+        self, openai_llm_config, mocker
+    ):
+        """The reasoning-content fallback is scoped to truncated responses
+        (``finish_reason="length"``) only.
+
+        If a provider returns ``finish_reason="stop"`` with empty content
+        and a populated reasoning trace, the model is claiming to be done
+        without producing a final answer -- that is a real model failure
+        and the adapter must surface it instead of silently promoting the
+        scratchpad to the assistant message.
+        """
+        mock_choice = MagicMock()
+        mock_choice.finish_reason = "stop"
+        mock_message = MagicMock()
+        mock_message.content = ""
+        mock_message.tool_calls = None
+        mock_message.reasoning_content = "I should answer the user."
+        mock_choice.message = mock_message
+
+        mock_response = MagicMock()
+        mock_response.choices = [mock_choice]
+
+        mock_client = mocker.AsyncMock()
+        mock_client.chat.completions.create.return_value = mock_response
+        mocker.patch(
+            "xagent.core.model.chat.basic.openai.AsyncOpenAI",
+            return_value=mock_client,
+        )
+
+        llm = OpenAILLM(**openai_llm_config)
+
+        with pytest.raises(
+            RuntimeError, match="LLM returned empty content and no tool calls"
+        ):
+            await llm.chat([{"role": "user", "content": "Hello"}])
+
+    @pytest.mark.asyncio
     async def test_empty_string_api_key(self, openai_llm_config, monkeypatch):
         """Test that empty string API key is allowed and does not fallback to environment variable."""
         # Set environment variable to ensure we can test that it's NOT used
