@@ -254,22 +254,46 @@ class XinferenceLLM(BaseLLM):
         if choices:
             choice = choices[0]
             message = choice.get("message", {})
+            reasoning_content = message.get("reasoning_content") or ""
 
             # Check for tool calls
             tool_calls = message.get("tool_calls")
             if tool_calls:
-                return {
+                result: Dict[str, Any] = {
                     "type": "tool_call",
                     "tool_calls": tool_calls,
                     "raw": response_dict,
                 }
+                if reasoning_content:
+                    result["reasoning_content"] = reasoning_content
+                    result["reasoning"] = reasoning_content
+                return result
 
             # Handle text content
             content = message.get("content", "")
             if content:
-                return {
+                result = {
                     "type": "text",
                     "content": content,
+                    "raw": response_dict,
+                }
+                if reasoning_content:
+                    result["reasoning_content"] = reasoning_content
+                    result["reasoning"] = reasoning_content
+                return result
+
+            # Reasoning models (e.g. qwen3-thinking, deepseek-r1) may emit
+            # only ``reasoning_content`` and an empty ``content`` when the
+            # generation is truncated by ``max_tokens`` (finish_reason="length")
+            # before the final answer is produced. Surface the reasoning text
+            # as content so callers (notably the model connection test) do
+            # not treat a truncated-but-otherwise-healthy response as invalid.
+            if reasoning_content:
+                return {
+                    "type": "text",
+                    "content": reasoning_content,
+                    "reasoning_content": reasoning_content,
+                    "reasoning": reasoning_content,
                     "raw": response_dict,
                 }
 
