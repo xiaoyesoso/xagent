@@ -255,6 +255,7 @@ class XinferenceLLM(BaseLLM):
             choice = choices[0]
             message = choice.get("message", {})
             reasoning_content = message.get("reasoning_content") or ""
+            finish_reason = choice.get("finish_reason")
 
             # Check for tool calls
             tool_calls = message.get("tool_calls")
@@ -288,7 +289,18 @@ class XinferenceLLM(BaseLLM):
             # before the final answer is produced. Surface the reasoning text
             # as content so callers (notably the model connection test) do
             # not treat a truncated-but-otherwise-healthy response as invalid.
-            if reasoning_content:
+            #
+            # Gate strictly on ``finish_reason == "length"`` and require a
+            # non-whitespace reasoning trace: any other terminal reason
+            # (``"stop"``, ``"content_filter"``, ``None`` …) means the model
+            # claims to be done but produced no final answer, which is a
+            # real failure that callers must see -- promoting the reasoning
+            # trace would silently hide the bug.
+            if (
+                finish_reason == "length"
+                and reasoning_content
+                and reasoning_content.strip()
+            ):
                 return {
                     "type": "text",
                     "content": reasoning_content,

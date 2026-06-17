@@ -432,3 +432,58 @@ class TestProcessChatResponse:
                     ]
                 }
             )
+
+    def test_finish_reason_stop_with_only_reasoning_still_raises(self) -> None:
+        """The reasoning-content fallback is scoped to truncated responses
+        (``finish_reason="length"``) only.
+
+        If a provider returns ``finish_reason="stop"`` with empty content
+        and a populated reasoning trace, the model is claiming to be done
+        without producing a final answer -- that is a real model failure
+        and the adapter must surface it instead of silently promoting the
+        scratchpad to the assistant message.
+        """
+        llm = self._make_llm()
+
+        with pytest.raises(RuntimeError, match="Invalid Xinference response"):
+            llm._process_chat_response(
+                {
+                    "choices": [
+                        {
+                            "message": {
+                                "role": "assistant",
+                                "content": "",
+                                "reasoning_content": "I should answer the user.",
+                            },
+                            "finish_reason": "stop",
+                        }
+                    ]
+                }
+            )
+
+    def test_whitespace_only_reasoning_with_length_finish_still_raises(
+        self,
+    ) -> None:
+        """A whitespace-only reasoning trace must NOT be treated as a
+        usable answer even when ``finish_reason="length"``.
+
+        Otherwise a provider returning ``reasoning_content="   "`` would
+        surface a blank string as the assistant message.
+        """
+        llm = self._make_llm()
+
+        with pytest.raises(RuntimeError, match="Invalid Xinference response"):
+            llm._process_chat_response(
+                {
+                    "choices": [
+                        {
+                            "message": {
+                                "role": "assistant",
+                                "content": "",
+                                "reasoning_content": "   \n  ",
+                            },
+                            "finish_reason": "length",
+                        }
+                    ]
+                }
+            )
