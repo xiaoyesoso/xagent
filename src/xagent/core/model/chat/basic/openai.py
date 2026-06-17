@@ -268,9 +268,31 @@ class OpenAILLM(BaseLLM):
 
             # Handle text content
             content = message.content
+            reasoning_content = (
+                message.reasoning_content
+                if hasattr(message, "reasoning_content")
+                else None
+            )
 
             # Handle None or empty content when no tool calls
             if not content or not content.strip():
+                # Reasoning models (e.g. qwen3-thinking, deepseek-r1, served
+                # via OpenAI-compatible endpoints like Xinference) can return
+                # ``content=""`` while ``reasoning_content`` carries the
+                # partial answer when the generation is truncated by
+                # ``max_tokens`` (``finish_reason="length"``) before the
+                # final answer is produced. Surface the reasoning text as
+                # content so callers (notably the model connection test) do
+                # not treat a truncated-but-otherwise-healthy response as
+                # invalid.
+                if reasoning_content:
+                    return {
+                        "type": "text",
+                        "content": reasoning_content,
+                        "reasoning_content": reasoning_content,
+                        "reasoning": reasoning_content,
+                        "raw": resp.model_dump(),
+                    }
                 # If there are no tool calls and no content, this is an error
                 raise RuntimeError(
                     f"LLM returned {'empty' if content == '' else 'None'} content and no tool calls"
@@ -281,9 +303,9 @@ class OpenAILLM(BaseLLM):
                 "content": content,
                 "raw": resp.model_dump(),
             }
-            if hasattr(message, "reasoning_content") and message.reasoning_content:
-                result["reasoning_content"] = message.reasoning_content
-                result["reasoning"] = message.reasoning_content
+            if reasoning_content:
+                result["reasoning_content"] = reasoning_content
+                result["reasoning"] = reasoning_content
             return result
 
         try:
@@ -610,19 +632,40 @@ class OpenAILLM(BaseLLM):
 
             # Handle text content
             content = message.content
+            reasoning_content = (
+                message.reasoning_content
+                if hasattr(message, "reasoning_content")
+                else None
+            )
 
             # Handle None or empty content when no tool calls
             if not content or not content.strip():
+                # See ``chat()``: reasoning models truncated by ``max_tokens``
+                # may return ``content=""`` with the partial answer in
+                # ``reasoning_content``. Surface it as content rather than
+                # treating the response as invalid.
+                if reasoning_content:
+                    return {
+                        "type": "text",
+                        "content": reasoning_content,
+                        "reasoning_content": reasoning_content,
+                        "reasoning": reasoning_content,
+                        "raw": response.model_dump(),
+                    }
                 # If there are no tool calls and no content, this is an error
                 raise RuntimeError(
                     f"LLM returned {'empty' if content == '' else 'None'} content and no tool calls"
                 )
 
-            return {
+            result: Dict[str, Any] = {
                 "type": "text",
                 "content": content,
                 "raw": response.model_dump(),
             }
+            if reasoning_content:
+                result["reasoning_content"] = reasoning_content
+                result["reasoning"] = reasoning_content
+            return result
 
         except openai.APITimeoutError as e:
             # Handle timeout errors
