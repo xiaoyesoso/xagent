@@ -465,6 +465,43 @@ class TestOpenAILLM:
         assert result["reasoning"] == "Here"
 
     @pytest.mark.asyncio
+    async def test_whitespace_only_reasoning_content_still_raises(
+        self, openai_llm_config, mocker
+    ):
+        """A whitespace-only reasoning trace must NOT be treated as a
+        usable answer.
+
+        The empty-content guard checks ``content.strip()``; the
+        reasoning fallback must apply the same rule, otherwise a
+        provider returning ``reasoning_content="   "`` would surface a
+        blank string as if it were a valid response.
+        """
+        mock_choice = MagicMock()
+        mock_choice.finish_reason = "length"
+        mock_message = MagicMock()
+        mock_message.content = ""
+        mock_message.tool_calls = None
+        mock_message.reasoning_content = "   \n  "
+        mock_choice.message = mock_message
+
+        mock_response = MagicMock()
+        mock_response.choices = [mock_choice]
+
+        mock_client = mocker.AsyncMock()
+        mock_client.chat.completions.create.return_value = mock_response
+        mocker.patch(
+            "xagent.core.model.chat.basic.openai.AsyncOpenAI",
+            return_value=mock_client,
+        )
+
+        llm = OpenAILLM(**openai_llm_config)
+
+        with pytest.raises(
+            RuntimeError, match="LLM returned empty content and no tool calls"
+        ):
+            await llm.chat([{"role": "user", "content": "Hello"}])
+
+    @pytest.mark.asyncio
     async def test_empty_string_api_key(self, openai_llm_config, monkeypatch):
         """Test that empty string API key is allowed and does not fallback to environment variable."""
         # Set environment variable to ensure we can test that it's NOT used

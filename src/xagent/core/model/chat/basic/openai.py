@@ -284,8 +284,10 @@ class OpenAILLM(BaseLLM):
                 # final answer is produced. Surface the reasoning text as
                 # content so callers (notably the model connection test) do
                 # not treat a truncated-but-otherwise-healthy response as
-                # invalid.
-                if reasoning_content:
+                # invalid. Mirror the ``content`` whitespace check so a
+                # reasoning trace that is purely whitespace still falls
+                # through to the empty-response error.
+                if reasoning_content and reasoning_content.strip():
                     return {
                         "type": "text",
                         "content": reasoning_content,
@@ -643,8 +645,10 @@ class OpenAILLM(BaseLLM):
                 # See ``chat()``: reasoning models truncated by ``max_tokens``
                 # may return ``content=""`` with the partial answer in
                 # ``reasoning_content``. Surface it as content rather than
-                # treating the response as invalid.
-                if reasoning_content:
+                # treating the response as invalid. Mirror the ``content``
+                # whitespace check so a reasoning trace that is purely
+                # whitespace still falls through to the empty-response error.
+                if reasoning_content and reasoning_content.strip():
                     return {
                         "type": "text",
                         "content": reasoning_content,
